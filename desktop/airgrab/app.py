@@ -1,8 +1,13 @@
-"""Application entry point: wires the node, discovery, and tray together.
+"""The application: node, discovery, camera and tray wired together.
 
-The asyncio work runs on a dedicated background thread because pystray's
-event loop must own the main thread on Windows. Everything crossing that
-boundary goes through run_coroutine_threadsafe.
+The asyncio work runs on a dedicated background thread because pystray's event
+loop must own the main thread on Windows, and the camera runs on a third
+thread of its own because reading a frame blocks. Everything crossing those
+boundaries goes through run_coroutine_threadsafe.
+
+Nothing here decides anything. Discovery decides who exists, the gesture
+engine decides what the hand did, the coordinator decides whether that means a
+transfer. This module only connects them and tells the user what happened.
 """
 
 from __future__ import annotations
@@ -12,9 +17,13 @@ import os
 import threading
 from pathlib import Path
 
+from airgrab.camera import GestureCameraLoop, open_default_camera
+from airgrab.capture import ScreenCapture
 from airgrab.config import default_data_dir, load_settings
 from airgrab.discovery import Advertiser, Browser, DiscoveredPeer
+from airgrab.gesture import EventType, GestureEvent
 from airgrab.node import Node, NodeConfig
+from airgrab.session import GestureSession
 from airgrab.ui.tray import Tray
 from airgrab.windows import ensure_firewall_rule
 
@@ -38,6 +47,11 @@ class AirGrabApp:
         self._node.on_incoming_file = self._on_file_received
         self._node.on_pair_request = self._confirm_incoming_pairing
 
+        self._screen = ScreenCapture(self._data_dir / "captures")
+        self._session = GestureSession(self._node, capture=self._screen.capture)
+        self._session.on_event = self._on_gesture_event
+        self._session.on_transfer = self._on_transfer_finished
+
         self._tray = Tray(
             on_open_downloads=self._open_downloads,
             on_pair=self._pair_with_first_peer,
@@ -45,6 +59,8 @@ class AirGrabApp:
         )
         self._advertiser: Advertiser | None = None
         self._browser: Browser | None = None
+        self._camera: GestureCameraLoop | None = None
+        self._camera_ready = False
 
     # ------------------------------------------------------------- lifecycle
 
@@ -82,6 +98,30 @@ class AirGrabApp:
         )
         await self._browser.start()
 
+        self._start_camera()
+
+    def _start_camera(self) -> None:
+        parts = open_default_camera()
+        if parts is None:
+            self._camera_ready = False
+            self._tray.notify(
+                "Gestures are off: no camera, or the gesture model is missing. "
+                "Run tools/fetch_model.py to download it."
+            )
+            return
+
+        read, classify, close = parts
+        self._camera = GestureCameraLoop(
+            observe=self._session.observe,
+            loop=self._loop,
+            read=read,
+            classify=classify,
+            close=close,
+            on_stopped=self._on_camera_stopped,
+        )
+        self._camera.start()
+        self._camera_ready = True
+
     async def _stop_services(self) -> None:
         if self._browser is not None:
             await self._browser.stop()
@@ -89,11 +129,15 @@ class AirGrabApp:
         if self._advertiser is not None:
             await self._advertiser.stop()
             self._advertiser = None
+        await self._session.close()
         await self._node.stop()
 
     def stop(self) -> None:
-        # Called from the tray thread, so shutdown has to be marshalled onto
-        # the asyncio thread rather than awaited here.
+        # Called from the tray thread, so shutdown is marshalled onto the
+        # asyncio thread rather than awaited here.
+        if self._camera is not None:
+            self._camera.stop()
+            self._camera = None
         future = asyncio.run_coroutine_threadsafe(self._stop_services(), self._loop)
         try:
             future.result(timeout=10)
@@ -102,27 +146,79 @@ class AirGrabApp:
         self._loop.call_soon_threadsafe(self._loop.stop)
         self._tray.stop()
 
-    # ---------------------------------------------------------------- events
+    # ---------------------------------------------------------------- peers
 
     def _on_peer_found(self, peer: DiscoveredPeer) -> None:
         self._peers[peer.fingerprint] = peer
-        trusted = self._node.trust.is_trusted(peer.fingerprint)
-        if trusted:
-            self._tray.set_status(f"Connected to {peer.name}", "connected")
-        else:
+        if not self._node.trust.is_trusted(peer.fingerprint):
             self._tray.set_status(f"{peer.name} found — not paired yet", "idle")
+            return
+
+        # A paired device gets a control channel immediately. Gesture events
+        # are useless if the link is only opened when a transfer starts.
+        self._session.register_peer(peer.fingerprint, peer.host, peer.port)
+        asyncio.run_coroutine_threadsafe(self._link_to(peer), self._loop)
+
+    async def _link_to(self, peer: DiscoveredPeer) -> None:
+        try:
+            await self._node.open_link(peer.host, peer.port, expect_fp=peer.fingerprint)
+        except Exception as exc:
+            self._tray.set_status(f"Could not reach {peer.name}: {exc}", "problem")
+            return
+        ready = "Ready" if self._camera_ready else "Ready (gestures off)"
+        self._tray.set_status(f"{ready} — connected to {peer.name}", "connected")
 
     def _on_peer_lost(self, fingerprint: str) -> None:
-        self._peers.pop(fingerprint, None)
+        peer = self._peers.pop(fingerprint, None)
+        self._session.forget_peer(fingerprint)
+        if peer is not None:
+            self._tray.set_status(f"{peer.name} went offline", "idle")
         if not self._peers:
             self._tray.set_status(
                 "No devices found — check both are on the same Wi-Fi", "idle"
             )
 
+    # -------------------------------------------------------------- feedback
+
+    def _on_gesture_event(self, event: GestureEvent) -> None:
+        """The user cannot see the state machine, so the tray has to show it.
+
+        Without this the gesture feels broken while it is working perfectly:
+        there is no other signal that a grab was registered.
+        """
+        if event.type is EventType.ARMED:
+            self._tray.set_status("Ready — close your fist to grab", "connected")
+        elif event.type is EventType.GRABBED:
+            self._tray.set_status("Holding — open your hand at the other device",
+                                  "connected")
+        elif event.type is EventType.CATCH_READY:
+            self._tray.set_status("Incoming — open your hand to receive", "connected")
+        elif event.type is EventType.CANCELLED:
+            self._tray.set_status("Grab expired", "idle")
+            self._tray.notify("Grab expired — nothing was sent.")
+        elif event.type is EventType.DISARMED:
+            self._tray.set_status("Ready", "connected" if self._peers else "idle")
+
+    def _on_transfer_finished(self, peer_fp: str, ok: bool) -> None:
+        peer = self._peers.get(peer_fp)
+        name = peer.name if peer else "the other device"
+        if ok:
+            self._tray.notify(f"Sent to {name}")
+            self._tray.set_status(f"Ready — connected to {name}", "connected")
+        else:
+            self._tray.notify(f"Could not send to {name}")
+            self._tray.set_status("Send failed", "problem")
+
+    def _on_camera_stopped(self, reason: str) -> None:
+        self._camera_ready = False
+        if reason != "stopped":
+            self._tray.notify(f"Gestures stopped: {reason}")
+            self._tray.set_status("Gestures unavailable", "problem")
+
     def _on_file_received(self, path: Path) -> None:
         self._tray.notify(f"Received {path.name}")
 
-    # ------------------------------------------------------------ user actions
+    # ---------------------------------------------------------- user actions
 
     def _open_downloads(self) -> None:
         self._settings.download_dir.mkdir(parents=True, exist_ok=True)
@@ -152,9 +248,11 @@ class AirGrabApp:
             except Exception as exc:
                 self._tray.notify(f"Pairing failed: {exc}")
                 return
-            self._tray.notify(
-                f"Paired with {peer.name}" if granted else "Pairing cancelled"
-            )
+            if granted:
+                self._tray.notify(f"Paired with {peer.name}")
+                self._on_peer_found(peer)  # link immediately now that it is trusted
+            else:
+                self._tray.notify("Pairing cancelled")
 
         future.add_done_callback(report)
 
