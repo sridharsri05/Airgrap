@@ -31,9 +31,9 @@ launches and listens on 0.0.0.0:53421.
 | Device identity | done |
 | Connection layer (control channel + transfer endpoint) | done |
 | Finding the PC on Wi-Fi | done |
-| Background service | in progress |
-| Camera + hand tracking | not started |
-| Screen | not started |
+| Background service | done |
+| Camera + hand tracking | next |
+| Screen | status screen only |
 
 Verified on loopback: two nodes with real certificates paired, showed the
 same six digits on both sides, and transferred 700,000 bytes with a matching
