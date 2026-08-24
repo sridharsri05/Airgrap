@@ -1,0 +1,25 @@
+{
+  "_comment": "Shared cross-language vectors. The Kotlin implementation must reproduce these exactly.",
+  "cases": [
+    {
+      "a": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "b": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "sas": "200959"
+    },
+    {
+      "a": "0000000000000000000000000000000000000000000000000000000000000000",
+      "b": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "sas": "048846"
+    },
+    {
+      "a": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+      "b": "cafebabecafebabecafebabecafebabecafebabecafebabecafebabecafebabe",
+      "sas": "342457"
+    },
+    {
+      "a": "1111111111111111111111111111111111111111111111111111111111111111",
+      "b": "1111111111111111111111111111111111111111111111111111111111111111",
+      "sas": "500498"
+    }
+  ]
+}
