@@ -1,0 +1,199 @@
+"""Build the Windows AirGrab executable with PyInstaller.
+
+    python tools/build_exe.py
+
+Deliberately a **single-folder** build (`--onedir`), not `--onefile`. One-file
+builds unpack the entire archive to a temp directory on every launch; with
+MediaPipe's native .pyd/.dll payload plus the 8 MB gesture model that is
+several seconds of startup each time, and the unpack step is a common source
+of antivirus false positives and of failures on locked-down temp directories.
+A folder starts instantly and can be zipped just as easily.
+
+What the flags are for:
+
+* ``--collect-all mediapipe`` — MediaPipe ships .tflite/.binarypb graph assets
+  and native extension modules that PyInstaller's module scanner cannot see,
+  because they are loaded by path at runtime rather than imported. Without
+  this the build succeeds and then fails on the first frame.
+* ``--collect-all cv2`` / ``--collect-all PIL`` — OpenCV loads its own
+  DLLs and PIL loads image codec plugins dynamically, same problem.
+* ``--add-data models/gesture_recognizer.task;models`` — puts the model at
+  ``<root>/models/`` inside the bundle, which is exactly where both
+  ``airgrab.resources.model_path()`` and ``airgrab.handpose.DEFAULT_MODEL_PATH``
+  look. That relative layout is the contract; do not "tidy" it.
+* ``--noconsole`` — a tray application must not open a console window.
+"""
+
+from __future__ import annotations
+
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+APP_NAME = "AirGrab"
+MODEL = ROOT / "models" / "gesture_recognizer.task"
+DIST = ROOT / "dist"
+WORK = ROOT / "build"
+
+# Imported indirectly (backend selection, lazy imports, tkinter dialogs), so
+# the static scanner does not find them.
+HIDDEN_IMPORTS = [
+    "pystray._win32",
+    "PIL._tkinter_finder",
+    "tkinter",
+    "tkinter.messagebox",
+    "mediapipe.python._framework_bindings",
+    "airgrab.app",
+]
+
+COLLECT_ALL = ["mediapipe", "cv2", "PIL"]
+COLLECT_SUBMODULES = ["zeroconf"]
+
+LAUNCHER = """\
+import multiprocessing
+import sys
+
+from airgrab.app import main
+
+if __name__ == "__main__":
+    # Frozen builds re-execute the .exe for every child process; without this
+    # the tray app would fork copies of itself if anything spawns one.
+    multiprocessing.freeze_support()
+    sys.exit(main())
+"""
+
+
+def fail(message: str) -> int:
+    print(f"\nBUILD FAILED\n\n{message}\n", file=sys.stderr)
+    return 1
+
+
+def ensure_pyinstaller() -> bool:
+    try:
+        import PyInstaller  # noqa: F401
+    except ImportError:
+        print("PyInstaller not found in this interpreter; installing it.")
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "pyinstaller"],
+            check=False,
+        )
+        if result.returncode != 0:
+            return False
+        try:
+            import PyInstaller  # noqa: F401,F811
+        except ImportError:
+            return False
+    return True
+
+
+def check_model() -> bool:
+    if MODEL.is_file() and MODEL.stat().st_size > 1_000_000:
+        return True
+    return False
+
+
+def build() -> int:
+    if not check_model():
+        return fail(
+            f"The gesture model is missing (or truncated):\n"
+            f"    {MODEL}\n\n"
+            f"It is ~8 MB of binary and is not committed to the repository.\n"
+            f"Download it first, from the desktop/ directory:\n\n"
+            f"    python tools/fetch_model.py\n\n"
+            f"then run this script again."
+        )
+
+    if not ensure_pyinstaller():
+        return fail(
+            "PyInstaller could not be installed into this interpreter:\n"
+            f"    {sys.executable}\n\n"
+            "Install it manually with:\n\n"
+            f"    \"{sys.executable}\" -m pip install pyinstaller"
+        )
+
+    with tempfile.TemporaryDirectory(prefix="airgrab-build-") as tmp:
+        entry = Path(tmp) / "airgrab_launcher.py"
+        entry.write_text(LAUNCHER, encoding="utf-8")
+
+        command = [
+            sys.executable,
+            "-m",
+            "PyInstaller",
+            "--noconfirm",
+            "--clean",
+            "--onedir",
+            "--noconsole",
+            "--name",
+            APP_NAME,
+            "--distpath",
+            str(DIST),
+            "--workpath",
+            str(WORK),
+            "--specpath",
+            str(WORK),
+            "--paths",
+            str(ROOT),
+            "--add-data",
+            f"{MODEL}{os_sep()}models",
+        ]
+        for package in COLLECT_ALL:
+            command += ["--collect-all", package]
+        for package in COLLECT_SUBMODULES:
+            command += ["--collect-submodules", package]
+        for name in HIDDEN_IMPORTS:
+            command += ["--hidden-import", name]
+        command.append(str(entry))
+
+        print("Running:\n  " + " ".join(command) + "\n")
+        result = subprocess.run(command, cwd=str(ROOT), check=False)
+
+    if result.returncode != 0:
+        return fail(
+            "PyInstaller exited with code "
+            f"{result.returncode}. The output above has the reason."
+        )
+
+    exe = DIST / APP_NAME / f"{APP_NAME}.exe"
+    if not exe.is_file():
+        return fail(
+            f"PyInstaller reported success but produced no executable at\n    {exe}"
+        )
+
+    bundled_model = DIST / APP_NAME / "_internal" / "models" / "gesture_recognizer.task"
+    if not bundled_model.is_file():
+        # Older/newer PyInstaller layouts put data beside the exe instead.
+        bundled_model = DIST / APP_NAME / "models" / "gesture_recognizer.task"
+    if not bundled_model.is_file():
+        return fail(
+            "The build finished but the gesture model was not bundled. "
+            "Gestures would be dead in this build, so it is being treated as "
+            "a failure."
+        )
+
+    print("\nBuild succeeded.")
+    print(f"  Executable : {exe}")
+    print(f"  Folder     : {exe.parent}")
+    print(f"  Model      : {bundled_model}")
+    print(f"  Total size : {folder_size_mb(exe.parent):.1f} MB")
+    print("\nShip the whole folder - the .exe alone will not run.")
+    return 0
+
+
+def os_sep() -> str:
+    """PyInstaller's --add-data separator: ';' on Windows, ':' elsewhere."""
+    return ";" if sys.platform == "win32" else ":"
+
+
+def folder_size_mb(folder: Path) -> float:
+    total = sum(f.stat().st_size for f in folder.rglob("*") if f.is_file())
+    return total / (1024 * 1024)
+
+
+def main() -> int:
+    return build()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
