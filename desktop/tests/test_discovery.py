@@ -12,6 +12,8 @@ Testing through the same context the app uses is the whole point.
 """
 
 import asyncio
+import json
+from pathlib import Path
 
 import pytest
 
@@ -73,3 +75,29 @@ async def test_advertising_works_from_inside_a_running_event_loop():
     advertiser = Advertiser(FP, "LOOP-TEST", "windows", 53422)
     await advertiser.start()
     await advertiser.stop()
+
+
+def test_discovery_matches_the_shared_vectors():
+    """Byte-level agreement with the Kotlin implementation.
+
+    A mismatch in the service type or a TXT key is invisible in the worst
+    way: both implementations run correctly, report no error, and simply
+    never see one another. Pinning both to one file turns that into a
+    failing build.
+    """
+    vectors = json.loads(
+        (Path(__file__).parents[2] / "protocol" / "vectors" / "discovery.json").read_text()
+    )
+    assert SERVICE_TYPE == vectors["service_type_full"]
+    assert SERVICE_TYPE.removesuffix(".local.") == vectors["service_type_short"]
+
+    fingerprint = vectors["properties"]["id"]
+    advertiser = Advertiser(fingerprint, "PADMA-PC", "windows", 53421)
+    properties = {
+        key.decode() if isinstance(key, bytes) else key:
+            value.decode() if isinstance(value, bytes) else value
+        for key, value in advertiser._info.properties.items()
+    }
+
+    assert properties == vectors["properties"]
+    assert advertiser._info.name == f"{vectors['instance_name']}.{SERVICE_TYPE}"

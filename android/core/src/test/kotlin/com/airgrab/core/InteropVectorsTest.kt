@@ -131,7 +131,55 @@ class InteropVectorsTest {
         assertEquals(2, reread.all().size)
         assertEquals("KOTLIN-PHONE", reread.get("c".repeat(64))?.name)
     }
+
+    // ------------------------------------------------------------ discovery
+
+    @Test
+    fun `advertises the same service the python implementation browses for`() {
+        val root = Json.parseToJsonElement(vectors("discovery.json").readText()).jsonObject
+
+        // A mismatch here is invisible in the worst way: both implementations
+        // run correctly, report no error, and never see one another.
+        assertEquals(root["service_type_full"]!!.jsonPrimitive.content, SERVICE_TYPE_FULL)
+        assertEquals(root["service_type_short"]!!.jsonPrimitive.content, SERVICE_TYPE_SHORT)
+
+        val fingerprint = root["properties"]!!.jsonObject["id"]!!.jsonPrimitive.content
+        assertEquals(
+            root["instance_name"]!!.jsonPrimitive.content,
+            Discovery.instanceName(fingerprint),
+        )
+    }
+
+    @Test
+    fun `publishes the same txt record python publishes`() {
+        val root = Json.parseToJsonElement(vectors("discovery.json").readText()).jsonObject
+        val expected = root["properties"]!!.jsonObject
+            .mapValues { (_, value) -> value.jsonPrimitive.content }
+
+        assertEquals(
+            expected,
+            Discovery.properties(
+                fingerprint = expected.getValue("id"),
+                name = expected.getValue("name"),
+                platform = expected.getValue("plat"),
+            ),
+        )
+    }
+
+    @Test
+    fun `reads a peer out of a python advertisement`() {
+        val root = Json.parseToJsonElement(vectors("discovery.json").readText()).jsonObject
+        val properties = root["properties"]!!.jsonObject
+            .mapValues { (_, value) -> value.jsonPrimitive.content as String? }
+
+        val peer = Discovery.peerFrom(properties, "192.168.29.23", DEFAULT_PORT, "a".repeat(64))
+
+        assertEquals("PADMA-PC", peer?.name)
+        assertEquals("windows", peer?.platform)
+        assertEquals(DEFAULT_PORT, peer?.port)
+    }
 }
+
 
 private val kotlinx.serialization.json.JsonPrimitive.int: Int
     get() = requireNotNull(intOrNull) { "expected an integer, got $content" }

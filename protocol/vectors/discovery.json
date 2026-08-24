@@ -1,0 +1,12 @@
+{
+  "note": "Generated from desktop/airgrab/discovery.py. Pins the phone and the desktop to one service type and TXT record. A mismatch here is invisible: both sides work, neither ever sees the other.",
+  "service_type_full": "_airgrab._tcp.local.",
+  "service_type_short": "_airgrab._tcp",
+  "instance_name": "bbbbbbbbbbbbbbbb",
+  "properties": {
+    "v": "1",
+    "id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "name": "PADMA-PC",
+    "plat": "windows"
+  }
+}

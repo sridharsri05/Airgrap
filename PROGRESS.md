@@ -30,8 +30,8 @@ launches and listens on 0.0.0.0:53421.
 | TLS transport foundation | done |
 | Device identity | done |
 | Connection layer (control channel + transfer endpoint) | done |
-| Finding the PC on Wi-Fi | in progress |
-| Background service | not started |
+| Finding the PC on Wi-Fi | done |
+| Background service | in progress |
 | Camera + hand tracking | not started |
 | Screen | not started |
 
@@ -46,11 +46,14 @@ These cannot be closed without the phone plugged in.
 - Whether Netty actually runs a TLS server on Android. The APK builds and
   packages, which is not the same claim. `TlsProbe` logs the verdict.
 - Whether the app survives vivo's background process management.
+- Whether the phone and the desktop actually see each other over mDNS. Both
+  are pinned to one service type and TXT record by a shared vectors file, but
+  agreeing on paper is not the same as multicast reaching the handset.
 - Every gesture threshold. How long a grab should be, and how much of a hand
   has to be visible, are answers only a real hand in front of a real camera
   can give.
 
 ## Counts
 
-- Python: 175 tests
-- Kotlin: 127 tests
+- Python: 176 tests
+- Kotlin: 146 tests
