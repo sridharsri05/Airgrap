@@ -7,6 +7,7 @@ import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Bundle
 import android.view.View
+import android.view.WindowManager
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.LinearLayout
@@ -67,23 +68,30 @@ class MainActivity : AppCompatActivity() {
     /** Peers already offered a pairing dialog, so it is not reopened each tick. */
     private val pairingInFlight = mutableSetOf<String>()
 
-    private val requestCamera = registerForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        if (granted) startGestureCamera()
-        // Refusing is legitimate: receiving still works, and the app says so
-        // in the status line rather than nagging.
-    }
-
-    private val requestNotifications = registerForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        if (!granted) {
+    /**
+     * Both permissions in one request.
+     *
+     * Asking for them one after another does not work: Android answers the
+     * second with "Can request only one set of permissions at a time" and
+     * silently drops it. On the first real handset that left the camera
+     * permission never requested at all, and the service waiting behind a
+     * dialog the user had not reached yet.
+     */
+    private val requestPermissions = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { results ->
+        if (results[Manifest.permission.POST_NOTIFICATIONS] == false) {
             Toast.makeText(
                 this, "AirGrab needs its notification to keep running", Toast.LENGTH_LONG
             ).show()
         }
+        // Started regardless: without the notification Android may stop the
+        // service later, but refusing to start at all helps nobody.
         AirGrabService.start(this)
+
+        // Refusing the camera is legitimate — receiving still works — so the
+        // app says so in the status line rather than nagging.
+        if (results[Manifest.permission.CAMERA] == true) startGestureCamera()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -91,20 +99,23 @@ class MainActivity : AppCompatActivity() {
         setContentView(buildLayout())
         acceptShare(intent)
 
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
-            != PackageManager.PERMISSION_GRANTED
-        ) {
-            requestNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
-        } else {
-            AirGrabService.start(this)
+        // The camera is bound to this activity's lifecycle, so the screen
+        // going dark stops it. On a phone whose screensaver kicks in after
+        // thirty seconds that means the gesture simply stops working while
+        // the user is still standing there trying it, with nothing to say
+        // why. Only while this screen is actually in front of them.
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
+        val wanted = listOf(Manifest.permission.POST_NOTIFICATIONS, Manifest.permission.CAMERA)
+        val missing = wanted.filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
         }
 
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
-            == PackageManager.PERMISSION_GRANTED
-        ) {
+        if (missing.isEmpty()) {
+            AirGrabService.start(this)
             startGestureCamera()
         } else {
-            requestCamera.launch(Manifest.permission.CAMERA)
+            requestPermissions.launch(missing.toTypedArray())
         }
 
         watch()
@@ -420,15 +431,42 @@ class MainActivity : AppCompatActivity() {
         if (!pairingInFlight.add(peer.fingerprint)) return
 
         lifecycleScope.launch(Dispatchers.IO) {
-            val granted = runCatching {
+            // The reason is logged, not swallowed. "Pairing failed" with
+            // nothing behind it is unactionable for the user and undebuggable
+            // for anyone else, and pairing has several distinct ways to fail
+            // that look identical from the outside.
+            val outcome = runCatching {
                 node.pairWith(peer.host, peer.port) { sas -> confirmCode(sas, peer.name) }
-            }.getOrElse { false }
+            }
+            val failure = outcome.exceptionOrNull()
+            if (failure != null) {
+                android.util.Log.e(AirGrabService.TAG, "pairing with ${peer.name} threw", failure)
+            } else if (outcome.getOrNull() != true) {
+                android.util.Log.w(
+                    AirGrabService.TAG,
+                    "pairing with ${peer.name} was refused (no exception)",
+                )
+            }
+            val granted = outcome.getOrNull() == true
+
+            if (granted) {
+                // Link immediately. Discovery only fires on CHANGE, and this
+                // peer was already known — it was simply untrusted when it
+                // arrived, so connectTo declined it. Without this the devices
+                // are paired but hold no control channel, and the first
+                // gesture after pairing goes nowhere.
+                AirGrabService.current?.gestures?.connectTo(peer)
+            }
 
             pairingInFlight.remove(peer.fingerprint)
             runOnUiThread {
                 Toast.makeText(
                     this@MainActivity,
-                    if (granted) "Paired with ${peer.name}" else "Pairing failed",
+                    when {
+                        granted -> "Paired with ${peer.name}"
+                        failure != null -> "Pairing failed: ${failure.message ?: failure.javaClass.simpleName}"
+                        else -> "Pairing was declined"
+                    },
                     Toast.LENGTH_LONG,
                 ).show()
             }

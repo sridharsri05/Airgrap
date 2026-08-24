@@ -1,16 +1,21 @@
 package com.airgrab.core
 
-import io.ktor.network.tls.certificates.KeyType
-import io.ktor.network.tls.certificates.buildKeyStore
-import io.ktor.network.tls.extensions.HashAlgorithm
-import io.ktor.network.tls.extensions.SignatureAlgorithm
 import java.io.File
-import java.net.InetAddress
+import java.math.BigInteger
+import java.security.KeyPairGenerator
 import java.security.KeyStore
 import java.security.PrivateKey
+import java.security.SecureRandom
 import java.security.Signature
 import java.security.cert.X509Certificate
+import java.security.spec.ECGenParameterSpec
+import java.util.Date
 import javax.security.auth.x500.X500Principal
+import org.bouncycastle.asn1.x500.X500Name
+import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter
+import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder
+import org.bouncycastle.jce.provider.BouncyCastleProvider
+import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder
 
 /**
  * A device identity backed by a keystore file, created once and kept forever.
@@ -33,12 +38,18 @@ import javax.security.auth.x500.X500Principal
  * readable only by this application, and on Windows is restricted to the
  * owner. That is the same protection the desktop's key already has.
  *
- * ## Why the low-level builder rather than Ktor's convenience helper
+ * ## Why BouncyCastle rather than Ktor's certificate helper
  *
- * `generateCertificate` defaults to RSA and offers no way to request a curve.
- * The protocol is fixed to P-256 with SHA256withECDSA, matching
- * `desktop/airgrab/identity.py`, so the certificate is built through
- * `buildKeyStore`, where the curve can be stated explicitly.
+ * Ktor's helper writes an X.509 certificate whose signature
+ * AlgorithmIdentifier carries a parameters field. For RSA that is correct;
+ * for ECDSA it is forbidden, and this protocol is fixed to P-256. Java's
+ * parser accepts it anyway, so every Kotlin test passed and phone-to-phone
+ * pairing worked — while Python's stricter parser refused the certificate
+ * outright and the desktop reported `auth_failed bad_signature`, blaming the
+ * signature for a certificate it could not even read.
+ *
+ * BouncyCastle produces a correctly encoded certificate, which costs a few
+ * megabytes in the APK and buys interoperability that cannot be tested away.
  */
 class FileIdentity private constructor(
     override val displayName: String,
@@ -76,6 +87,19 @@ class FileIdentity private constructor(
         private const val KEYSTORE_FILE = "identity.p12"
 
         /**
+         * Bumped when an already-stored identity must be thrown away.
+         *
+         * Version 1 certificates were written by Ktor's helper and carry a
+         * malformed signature AlgorithmIdentifier for ECDSA. Java loads them
+         * happily, so an upgraded app would keep using one and keep failing to
+         * pair with the desktop — with the same misleading `bad_signature`
+         * that took a real handset to find. Regenerating costs the user their
+         * pairings once; leaving it costs them the feature entirely.
+         */
+        private const val IDENTITY_VERSION = 2
+        private const val VERSION_FILE = "identity.version"
+
+        /**
          * PKCS12 rather than JKS: JKS is deprecated on the JVM and absent from
          * some Android builds, while PKCS12 is the default on both.
          */
@@ -98,6 +122,19 @@ class FileIdentity private constructor(
         fun loadOrCreate(dataDir: File, displayName: String): FileIdentity {
             dataDir.mkdirs()
             val file = File(dataDir, KEYSTORE_FILE)
+            val versionFile = File(dataDir, VERSION_FILE)
+
+            val storedVersion = runCatching {
+                versionFile.readText().trim().toInt()
+            }.getOrDefault(1)
+
+            if (file.exists() && storedVersion < IDENTITY_VERSION) {
+                file.delete()
+                // The trust store goes too. Those pairings were made against
+                // an identity that no longer exists, so keeping them would
+                // leave entries that can never match again.
+                File(dataDir, "trust.json").delete()
+            }
 
             val store = if (file.exists()) {
                 runCatching { load(file) }.getOrElse {
@@ -111,6 +148,8 @@ class FileIdentity private constructor(
             } else {
                 create(file)
             }
+
+            runCatching { versionFile.writeText(IDENTITY_VERSION.toString()) }
 
             val certificate = store.getCertificate(ALIAS) as X509Certificate
             val privateKey = store.getKey(ALIAS, PASSWORD) as PrivateKey
@@ -126,37 +165,35 @@ class FileIdentity private constructor(
             }
 
         private fun create(file: File): KeyStore {
-            val generated = buildKeyStore {
-                certificate(ALIAS) {
-                    password = PASSWORD_TEXT
-                    // P-256 with SHA-256, matching desktop/airgrab/identity.py.
-                    // The default is RSA, which would handshake and sign
-                    // perfectly well and fail only when the desktop tried to
-                    // verify a signature it could not parse.
-                    sign = SignatureAlgorithm.ECDSA
-                    hash = HashAlgorithm.SHA256
-                    keySizeInBits = 256
-                    keyType = KeyType.Server
-                    subject = X500Principal("CN=AirGrab")
-                    daysValid = 365L * 10
-                    // The certificate is never validated by hostname — peers
-                    // are self-signed and identity comes from the fingerprint
-                    // — but a TLS stack may still object to a certificate with
-                    // no subject alternative name at all.
-                    domains = listOf("localhost")
-                    ipAddresses = listOf(InetAddress.getByName("127.0.0.1"))
-                }
+            // P-256, matching desktop/airgrab/identity.py.
+            val keyPair = KeyPairGenerator.getInstance("EC").run {
+                initialize(ECGenParameterSpec("secp256r1"))
+                generateKeyPair()
             }
 
-            // Re-homed into PKCS12 because buildKeyStore produces a JKS.
+            val provider = BouncyCastleProvider()
+            val name = X500Name("CN=AirGrab")
+            val from = Date()
+            val until = Date(from.time + 3650L * 24 * 3600 * 1000)
+
+            val builder = JcaX509v3CertificateBuilder(
+                name,
+                BigInteger(64, SecureRandom()),
+                from,
+                until,
+                name,
+                keyPair.public,
+            )
+            val signer = JcaContentSignerBuilder(Certificates.SIGNATURE_ALGORITHM)
+                .setProvider(provider)
+                .build(keyPair.private)
+            val certificate = JcaX509CertificateConverter()
+                .setProvider(provider)
+                .getCertificate(builder.build(signer))
+
             val store = KeyStore.getInstance(KEYSTORE_TYPE).apply {
                 load(null, PASSWORD)
-                setKeyEntry(
-                    ALIAS,
-                    generated.getKey(ALIAS, PASSWORD),
-                    PASSWORD,
-                    generated.getCertificateChain(ALIAS),
-                )
+                setKeyEntry(ALIAS, keyPair.private, PASSWORD, arrayOf(certificate))
             }
 
             // Written to a temporary file and renamed, so an interrupted first

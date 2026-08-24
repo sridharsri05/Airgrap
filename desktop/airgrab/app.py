@@ -300,16 +300,41 @@ class AirGrabApp:
 
     @staticmethod
     def _ask(title: str, message: str) -> bool:
-        import tkinter
-        from tkinter import messagebox
+        """A yes/no dialog that works from ANY thread.
 
-        root = tkinter.Tk()
-        root.withdraw()
-        root.attributes("-topmost", True)
+        This uses the Win32 message box rather than tkinter, and the reason is
+        not stylistic. Pairing confirmations arrive on the asyncio thread,
+        because that is where the control channel reads them, while pystray
+        owns the main thread for the whole life of the process. Tkinter
+        requires every call to happen on the thread that created its root;
+        creating one from another thread does not raise, it simply never
+        paints. The symptom was a pairing that failed with no dialog on the PC
+        at all and no error anywhere: the phone waited for an answer nobody
+        could give.
+
+        MessageBoxW has no such constraint — it runs its own modal message
+        loop on whichever thread calls it.
+        """
+        import ctypes
+
+        MB_YESNO = 0x00000004
+        MB_ICONQUESTION = 0x00000020
+        MB_SYSTEMMODAL = 0x00001000  # keeps it above other windows
+        MB_SETFOREGROUND = 0x00010000
+        IDYES = 6
+
         try:
-            return bool(messagebox.askyesno(title, message, parent=root))
-        finally:
-            root.destroy()
+            answer = ctypes.windll.user32.MessageBoxW(
+                None,
+                message,
+                title,
+                MB_YESNO | MB_ICONQUESTION | MB_SYSTEMMODAL | MB_SETFOREGROUND,
+            )
+            return answer == IDYES
+        except Exception:
+            # Never assume yes. A dialog that cannot be shown must not become
+            # silent consent to pair with an unknown device.
+            return False
 
 
 def main() -> None:

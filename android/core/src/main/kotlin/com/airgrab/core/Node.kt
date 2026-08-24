@@ -622,13 +622,30 @@ class Node(val config: NodeConfig, val identity: FileIdentity) {
         connect(host, port) { connection ->
             connection.send(MessageType.PAIR_REQUEST, emptyMap())
             val challenge = connection.recv(MessageType.PAIR_CHALLENGE)
-            if (challenge.type != MessageType.PAIR_CHALLENGE) return@connect false
+
+            // A bare `false` here used to cover three unrelated outcomes: the
+            // peer rejected us, the peer disagreed about the code, and the
+            // user declined. From the outside they were indistinguishable,
+            // which made a real failure look like a decline.
+            if (challenge.type == MessageType.ERROR) {
+                throw ConnectionError(
+                    "peer refused pairing: " +
+                        (challenge.payload["code"]?.toString() ?: "unknown") + " " +
+                        (challenge.payload["message"]?.toString() ?: "")
+                )
+            }
+            if (challenge.type != MessageType.PAIR_CHALLENGE) {
+                throw ConnectionError("unexpected reply to pairing: ${challenge.type}")
+            }
 
             val sas = challenge.payload["sas"]?.toString() ?: ""
             // Recomputed locally from the fingerprint derived from the
             // certificate. A mismatch means the peer computed it against a
             // different identity than the one it proved it holds.
-            if (sas != Sas.compute(identity.fingerprint, connection.peerFp)) return@connect false
+            val expected = Sas.compute(identity.fingerprint, connection.peerFp)
+            if (sas != expected) {
+                throw ConnectionError("pairing code mismatch: peer said $sas, we computed $expected")
+            }
 
             val accepted = onSas(sas)
             connection.send(MessageType.PAIR_CONFIRM, mapOf("accepted" to accepted))

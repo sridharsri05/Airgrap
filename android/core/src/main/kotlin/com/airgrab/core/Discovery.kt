@@ -135,34 +135,46 @@ class PeerRegistry(
     // Keyed by mDNS service name, not by fingerprint: that is the only handle
     // a removal notification carries, and a peer that changes address keeps
     // the same service name.
+    //
+    // Synchronised because the writers are mDNS callbacks on a platform
+    // thread while the reader is the UI, several times a second. An
+    // unsynchronised LinkedHashMap does not merely risk a stale read: a
+    // resize racing a lookup can return null for a key that is present, which
+    // shows up as a device list that flickers between populated and empty.
     private val byService = LinkedHashMap<String, DiscoveredPeer>()
 
     /** Returns true when this was new or changed information. */
     fun found(serviceName: String, peer: DiscoveredPeer): Boolean {
-        if (byService[serviceName] == peer) return false
-        byService[serviceName] = peer
+        synchronized(byService) {
+            if (byService[serviceName] == peer) return false
+            byService[serviceName] = peer
+        }
         onFound(peer)
         return true
     }
 
     /** Returns true when a peer was actually removed. */
     fun lost(serviceName: String): Boolean {
-        val peer = byService.remove(serviceName) ?: return false
-        // Only announce the loss if no other advertisement still reaches the
-        // same device. A phone with both Wi-Fi and a hotspot can appear twice,
-        // and losing one address does not mean the device is gone.
-        if (byService.values.none { it.fingerprint == peer.fingerprint }) {
-            onLost(peer.fingerprint)
+        val gone: DiscoveredPeer
+        val stillReachable: Boolean
+        synchronized(byService) {
+            gone = byService.remove(serviceName) ?: return false
+            // Only announce the loss if no other advertisement still reaches
+            // the same device. A phone with both Wi-Fi and a hotspot can
+            // appear twice, and losing one address does not mean it is gone.
+            stillReachable = byService.values.any { it.fingerprint == gone.fingerprint }
         }
+        if (!stillReachable) onLost(gone.fingerprint)
         return true
     }
 
-    fun peers(): List<DiscoveredPeer> = byService.values.distinctBy { it.fingerprint }
+    fun peers(): List<DiscoveredPeer> =
+        synchronized(byService) { byService.values.toList() }.distinctBy { it.fingerprint }
 
     fun byFingerprint(fingerprint: String): DiscoveredPeer? =
-        byService.values.firstOrNull { it.fingerprint == fingerprint }
+        synchronized(byService) { byService.values.firstOrNull { it.fingerprint == fingerprint } }
 
     fun clear() {
-        byService.clear()
+        synchronized(byService) { byService.clear() }
     }
 }

@@ -3,6 +3,7 @@ package com.airgrab
 import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Matrix
 import android.util.Log
 import android.util.Size
 import androidx.camera.core.CameraSelector
@@ -56,6 +57,23 @@ class GestureCamera(
          * and classification stay cheap.
          */
         private val ANALYSIS_SIZE = Size(640, 480)
+
+        /**
+         * How long a lost hand keeps its last pose.
+         *
+         * The detector drops the hand for a frame or two constantly — motion
+         * blur, a finger leaving the edge, a moment of poor light — and each
+         * dropout reads as NONE. The state machine needs a steady pose to
+         * arm, so an unfiltered stream never holds one long enough and the
+         * gesture never fires even though the user is doing it correctly.
+         *
+         * This is sensor smoothing, not interpretation: it bridges gaps in
+         * SEEING the hand. Deciding what the hand means remains entirely the
+         * state machine's job, which is why this is not simply a longer
+         * threshold there. Short enough that genuinely opening the fist still
+         * registers as a change within one frame or two.
+         */
+        private const val POSE_HOLD_MILLIS = 250L
     }
 
     private val executor = Executors.newSingleThreadExecutor()
@@ -63,6 +81,23 @@ class GestureCamera(
 
     private val framesSeen = AtomicLong(0)
     private val framesClassified = AtomicLong(0)
+
+    /**
+     * Logged on CHANGE only.
+     *
+     * Per-frame logging at 20+ fps drowns everything else and slows the very
+     * loop it is measuring. Changes are what anyone watching actually needs:
+     * whether the camera saw a fist at all, and when.
+     */
+    @Volatile
+    private var lastLoggedPose: Pose? = null
+
+    /** Logged once, because it explains a whole class of "it sees nothing". */
+    @Volatile
+    private var loggedRotation = false
+
+    private var lastConfidentPose: Pose = Pose.NONE
+    private var lastConfidentAt: Long = 0
 
     /** Frames captured and frames actually classified, for diagnostics. */
     fun stats(): Pair<Long, Long> = framesSeen.get() to framesClassified.get()
@@ -119,14 +154,21 @@ class GestureCamera(
         framesSeen.incrementAndGet()
         try {
             val bitmap = toBitmap(proxy)
-            val pose = detector.classify(bitmap)
+            val pose = smoothed(detector.classify(bitmap))
             framesClassified.incrementAndGet()
 
+            if (pose != lastLoggedPose) {
+                lastLoggedPose = pose
+                Log.i(TAG, "hand: $pose")
+            }
             onPose(pose)
             // The clock is the state machine's own. Thresholds are durations,
             // not frame counts, precisely because this rate is not stable:
             // it falls with poor light and again when the phone gets warm.
-            stateMachine.observe(pose).forEach(onEvent)
+            stateMachine.observe(pose).forEach { event ->
+                Log.i(TAG, "gesture: ${event.type} (${event.fromState} -> ${event.toState})")
+                onEvent(event)
+            }
         } catch (exc: Throwable) {
             Log.w(TAG, "frame dropped: ${exc.message}")
         } finally {
@@ -138,12 +180,39 @@ class GestureCamera(
     }
 
     /**
-     * Copy the frame into an ARGB_8888 bitmap.
+     * Bridge momentary losses of the hand, and nothing more.
+     *
+     * Only NONE is bridged. An OTHER — a hand that is genuinely visible but
+     * is neither a fist nor a palm — is reported as it is, because that is
+     * real information about what the user is doing.
+     */
+    private fun smoothed(pose: Pose): Pose {
+        val now = System.nanoTime() / 1_000_000
+
+        if (pose != Pose.NONE) {
+            lastConfidentPose = pose
+            lastConfidentAt = now
+            return pose
+        }
+
+        val recent = now - lastConfidentAt < POSE_HOLD_MILLIS
+        return if (recent && lastConfidentPose != Pose.NONE) lastConfidentPose else Pose.NONE
+    }
+
+    /**
+     * Copy the frame into an upright ARGB_8888 bitmap.
      *
      * The copy is not avoidable: the proxy's buffer is reused as soon as
      * `close` is called, and MediaPipe reads the pixels after that point.
      * Sharing it produces intermittent garbage frames rather than a clean
      * failure.
+     *
+     * The ROTATION is not optional either, and its absence is not obvious.
+     * CameraX delivers frames in the sensor's orientation, which on a phone
+     * held upright is ninety degrees off. MediaPipe still finds a hand in a
+     * sideways image and still returns a result — it just cannot tell a fist
+     * from a palm, so every frame comes back as OTHER. Nothing errors; the
+     * gesture simply never fires.
      */
     private fun toBitmap(proxy: ImageProxy): Bitmap? {
         val plane = proxy.planes.firstOrNull() ?: return null
@@ -161,11 +230,24 @@ class GestureCamera(
         val bitmap = Bitmap.createBitmap(paddedWidth, proxy.height, Bitmap.Config.ARGB_8888)
         bitmap.copyPixelsFromBuffer(buffer)
 
-        return if (rowPadding == 0) {
+        val cropped = if (rowPadding == 0) {
             bitmap
         } else {
             Bitmap.createBitmap(bitmap, 0, 0, proxy.width, proxy.height)
         }
+
+        val rotation = proxy.imageInfo.rotationDegrees
+        if (!loggedRotation) {
+            loggedRotation = true
+            Log.i(TAG, "frame ${cropped.width}x${cropped.height}, rotation $rotation")
+        }
+        if (rotation == 0) return cropped
+
+        return Bitmap.createBitmap(
+            cropped, 0, 0, cropped.width, cropped.height,
+            Matrix().apply { postRotate(rotation.toFloat()) },
+            true,
+        )
     }
 
     fun stop() {

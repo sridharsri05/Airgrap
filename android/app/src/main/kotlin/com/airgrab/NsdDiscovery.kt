@@ -131,6 +131,7 @@ class NsdDiscovery(
             }
 
             override fun onServiceLost(info: NsdServiceInfo) {
+                Log.i(TAG, "lost ${info.serviceName} (browse)")
                 stopResolving(info.serviceName)
                 registry.lost(info.serviceName)
             }
@@ -212,6 +213,7 @@ class NsdDiscovery(
             }
 
             override fun onServiceLost() {
+                Log.i(TAG, "lost $name (resolve)")
                 registry.lost(name)
             }
 

@@ -60,7 +60,11 @@ async def test_own_advertisement_is_ignored():
     await browser.start()
     try:
         await asyncio.sleep(4)
-        assert found == []
+        # Asserting `found == []` would be wrong, and passed only because no
+        # other AirGrab had ever been running on the network. The claim here
+        # is narrower: whatever else is out there, we never rediscover
+        # OURSELVES. A real desktop and phone advertising nearby is normal.
+        assert FP not in [peer.fingerprint for peer in found]
     finally:
         await browser.stop()
         await advertiser.stop()

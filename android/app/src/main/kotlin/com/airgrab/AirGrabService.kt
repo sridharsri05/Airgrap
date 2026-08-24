@@ -18,6 +18,7 @@ import com.airgrab.core.GestureEvent
 import com.airgrab.core.Node
 import com.airgrab.core.NodeConfig
 import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -100,6 +101,17 @@ class AirGrabService : Service() {
     @Volatile
     private var status: String = "Starting"
 
+    /**
+     * Claimed before any work begins, not after.
+     *
+     * `if (node == null)` looks like it guards this and does not: bringUp is
+     * suspending, so two callers both see null long before either assigns.
+     * That happens routinely — the boot receiver and the activity can start
+     * the service within the same second — and the second attempt died with
+     * "Address already in use" while the first was already serving.
+     */
+    private val starting = AtomicBoolean(false)
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -123,7 +135,7 @@ class AirGrabService : Service() {
             ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
         )
 
-        if (node == null) scope.launch { bringUp() }
+        if (starting.compareAndSet(false, true)) scope.launch { bringUp() }
 
         // START_STICKY so the system restarts us if it reclaims memory. Not a
         // guarantee, but the difference between recovering in a minute and
@@ -199,6 +211,10 @@ class AirGrabService : Service() {
             Log.e(TAG, "could not start", exc)
             status = "Not running: ${exc.message ?: exc.javaClass.simpleName}"
             notify(status)
+            // Released so a later start can retry. Without this a transient
+            // failure — no network yet at boot, say — would leave the service
+            // permanently dead but still showing its notification.
+            starting.set(false)
         }
     }
 
@@ -231,6 +247,7 @@ class AirGrabService : Service() {
         discovery = null
         gestures = null
         current = null
+        starting.set(false)
         super.onDestroy()
     }
 

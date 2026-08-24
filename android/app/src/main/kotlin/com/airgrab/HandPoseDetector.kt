@@ -43,7 +43,16 @@ class HandPoseDetector private constructor(
         )
 
         /** Returns null if the model cannot be loaded, rather than throwing. */
-        fun create(context: Context, minConfidence: Float = 0.5f): HandPoseDetector? = try {
+        /**
+         * 0.35, not the 0.5 the desktop uses.
+         *
+         * A webcam sees a hand large, evenly lit and side-on. A phone's front
+         * camera sees it small, often backlit, and at whatever angle the arm
+         * holding the phone allows, so the recognizer's confidence sits lower
+         * for the same gesture. At 0.5 a real, clearly-made fist was scoring
+         * below the bar and arriving as OTHER.
+         */
+        fun create(context: Context, minConfidence: Float = 0.35f): HandPoseDetector? = try {
             val options = GestureRecognizer.GestureRecognizerOptions.builder()
                 .setBaseOptions(
                     BaseOptions.builder()

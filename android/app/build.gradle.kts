@@ -96,6 +96,9 @@ android {
             excludes += "/META-INF/INDEX.LIST"
             excludes += "/META-INF/io.netty.versions.properties"
             excludes += "/META-INF/*.kotlin_module"
+            // BouncyCastle's three jars each carry the same OSGi manifest.
+            // It is metadata for a container Android does not have.
+            excludes += "/META-INF/versions/9/OSGI-INF/MANIFEST.MF"
             // Jansi arrives transitively and carries native terminal libraries
             // for Windows, macOS and desktop Linux. A .dll inside an APK is
             // pure dead weight.
@@ -107,15 +110,27 @@ android {
 
 dependencies {
     implementation(project(":core")) {
-        // Netty's native transports are compiled for desktop Linux and macOS,
-        // not Android, so they are megabytes of shared objects that can never
-        // load here. Netty falls back to NIO, which is what Android uses
-        // anyway.
+        // Only the NATIVE artefacts. They are megabytes of .so files compiled
+        // for desktop Linux and macOS that can never load on Android, and
+        // Netty falls back to NIO — which is what Android uses anyway.
+        //
+        // The matching `-classes-` artefacts must STAY, even though they are
+        // equally useless here. Ktor picks its channel implementation by
+        // calling KQueue.isAvailable() and Epoll.isAvailable(), so the classes
+        // have to be present to answer "no". Removing them turns a graceful
+        // fallback into NoClassDefFoundError at server start, which is exactly
+        // what happened on the first real handset: the APK built, installed
+        // and launched, and the service died the moment it tried to listen.
         exclude(group = "io.netty", module = "netty-transport-native-epoll")
         exclude(group = "io.netty", module = "netty-transport-native-kqueue")
-        exclude(group = "io.netty", module = "netty-transport-classes-epoll")
-        exclude(group = "io.netty", module = "netty-transport-classes-kqueue")
     }
+
+    // Added back explicitly, because the `-classes-` artefacts reach the build
+    // only as dependencies OF the native ones — excluding native drops both.
+    // These are pure Java and tiny; what they cost in size they repay by
+    // answering isAvailable() with a plain false.
+    implementation("io.netty:netty-transport-classes-epoll:4.1.116.Final")
+    implementation("io.netty:netty-transport-classes-kqueue:4.1.116.Final")
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")

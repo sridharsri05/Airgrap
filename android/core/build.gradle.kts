@@ -44,12 +44,21 @@ dependencies {
     // purely to mint one keypair at first launch.
     api("io.ktor:ktor-network-tls-certificates:$ktorVersion")
 
-    // BouncyCastle is TEST-ONLY, and now for a better reason than when this
-    // was first written: ktor-network-tls-certificates above mints the
-    // self-signed certificate on both platforms, so the APK needs no
-    // certificate-generation library at all. BouncyCastle survives here only
-    // to forge test certificates for the authentication tests.
-    testImplementation("org.bouncycastle:bcpkix-jdk18on:1.79")
+    // BouncyCastle SHIPS. Two earlier revisions of this comment claimed it
+    // was test-only; a real handset proved otherwise.
+    //
+    // ktor-network-tls-certificates writes an X.509 certificate whose
+    // signature AlgorithmIdentifier carries a parameters field. That is
+    // correct for RSA and forbidden for ECDSA, and this protocol is P-256.
+    // Java's certificate parser is lenient and accepts it, so every Kotlin
+    // test passed and phone-to-phone worked. Python's parser is strict and
+    // rejects the certificate outright, which surfaced as `auth_failed
+    // bad_signature` on the first real pairing with the desktop — a message
+    // pointing at the signature when the certificate was never readable.
+    //
+    // On Android this does not collide with the platform's own copy, which is
+    // repackaged under com.android.org.bouncycastle.
+    api("org.bouncycastle:bcpkix-jdk18on:1.79")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
     testImplementation(kotlin("test"))
 }

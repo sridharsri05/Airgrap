@@ -55,6 +55,7 @@ class GestureOrchestrator(
             // Payload values are whatever the peer sent. The coordinator only
             // reads keys it knows, and nulls are dropped rather than trusted.
             val safe = payload.filterValues { it != null }.mapValues { it.value!! }
+            Log.i(TAG, "peer gesture: $type from ${peerFp.take(16)}")
             scope.launch { run(coordinator.onPeerMessage(peerFp, type, safe)) }
         }
 
@@ -121,6 +122,7 @@ class GestureOrchestrator(
     }
 
     private suspend fun perform(action: Action) {
+        Log.i(TAG, "action: ${action::class.simpleName}")
         when (action) {
             is Action.CaptureContent -> {
                 val file = onContentWanted()
