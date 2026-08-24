@@ -3,7 +3,10 @@ package com.airgrab
 import android.os.Bundle
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import androidx.lifecycle.lifecycleScope
 import com.airgrab.core.Sas
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 /**
  * Placeholder shell so the Android module compiles and the toolchain can be
@@ -26,5 +29,9 @@ class MainActivity : AppCompatActivity() {
             }
         }
         setContentView(text)
+
+        // Temporary: verifies a TLS server can actually run on this handset.
+        // Removed once the real node replaces it.
+        lifecycleScope.launch(Dispatchers.IO) { TlsProbe.run(filesDir) }
     }
 }

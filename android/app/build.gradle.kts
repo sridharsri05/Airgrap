@@ -33,14 +33,30 @@ android {
 
     packaging {
         resources {
+            // Netty ships a dozen jars that each carry these metadata files,
+            // and the Android packager refuses to guess which copy wins.
+            // None of them affect behaviour.
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
+            excludes += "/META-INF/INDEX.LIST"
+            excludes += "/META-INF/io.netty.versions.properties"
+            excludes += "/META-INF/*.kotlin_module"
         }
     }
 }
 
 dependencies {
-    implementation(project(":core"))
+    implementation(project(":core")) {
+        // Netty's native transports are compiled for desktop Linux and macOS,
+        // not Android, so they are megabytes of shared objects that can never
+        // load here. Netty falls back to NIO, which is what Android uses
+        // anyway.
+        exclude(group = "io.netty", module = "netty-transport-native-epoll")
+        exclude(group = "io.netty", module = "netty-transport-native-kqueue")
+        exclude(group = "io.netty", module = "netty-transport-classes-epoll")
+        exclude(group = "io.netty", module = "netty-transport-classes-kqueue")
+    }
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.appcompat:appcompat:1.7.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     testImplementation(kotlin("test"))
 }
