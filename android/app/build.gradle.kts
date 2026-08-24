@@ -3,6 +3,21 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+/**
+ * Release signing.
+ *
+ * Android refuses to install an unsigned APK, and refuses to *update* an app
+ * whose signature changed — so a build signed with a throwaway debug key would
+ * have to be uninstalled, losing the device identity and every pairing, on
+ * every update.
+ *
+ * The key lives in android/keystore/ and is gitignored. It is a self-signed
+ * key for sideloading, not a Play Store credential, but it still must not be
+ * shared: anyone holding it can publish an update Android will install over
+ * this app without warning.
+ */
+val keystoreFile = rootProject.file("keystore/airgrab.jks")
+
 android {
     namespace = "com.airgrab"
     compileSdk = 36
@@ -32,9 +47,36 @@ android {
         jvmTarget = "17"
     }
 
+    signingConfigs {
+        create("release") {
+            if (keystoreFile.exists()) {
+                storeFile = keystoreFile
+                storePassword = "airgrab-release"
+                keyAlias = "airgrab"
+                keyPassword = "airgrab-release"
+            }
+        }
+    }
+
     buildTypes {
         release {
+            signingConfig = if (keystoreFile.exists()) {
+                signingConfigs.getByName("release")
+            } else {
+                null
+            }
+
+            // Left OFF deliberately, for now.
+            //
+            // R8 would cut the APK considerably, but MediaPipe, Netty and
+            // Ktor all resolve classes reflectively and by name, and a keep
+            // rule that is very slightly wrong produces a build that installs
+            // cleanly and then fails at runtime with a ClassNotFoundException
+            // deep inside a library. That trade is only worth taking once the
+            // app has been confirmed working on a real handset, so there is
+            // something to compare against.
             isMinifyEnabled = false
+            isShrinkResources = false
         }
     }
 

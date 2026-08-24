@@ -8,3 +8,8 @@ build/
 *.spec
 airgrab-data/
 desktop/models/
+
+# The Android release signing key. Never committed: anyone holding it can
+# publish an update that Android will install over this app without warning.
+android/keystore/
+android/keystore.properties

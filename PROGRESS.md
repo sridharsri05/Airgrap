@@ -45,6 +45,20 @@ other moved a 300,000 byte file, hash verified. Releasing on the device that
 grabbed sends nothing; releasing with nothing held sends nothing; a hold
 nobody catches expires.
 
+## Packaging
+
+| Artefact | State |
+|----------|-------|
+| Windows executable, icon embedded | done |
+| Signed release APK (52MB) | done |
+| Application icons, both platforms | done |
+| User guide (README.md) | done |
+
+R8 minification is deliberately off. It would cut the APK considerably, but
+MediaPipe, Netty and Ktor all resolve classes reflectively, and a slightly
+wrong keep rule builds cleanly then fails at runtime inside a library. Worth
+taking only once the app is confirmed working on a handset.
+
 ## Waiting on a handset
 
 These cannot be closed without the phone plugged in.
