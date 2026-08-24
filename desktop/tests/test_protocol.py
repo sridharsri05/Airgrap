@@ -80,3 +80,29 @@ def test_sas_matches_shared_vectors():
     assert vectors["cases"], "vectors file must not be empty"
     for case in vectors["cases"]:
         assert compute_sas(case["a"], case["b"]) == case["sas"]
+
+
+def test_encode_matches_the_shared_envelope_vectors():
+    """Byte-level agreement with the Kotlin implementation.
+
+    Each side passing its own suite does not mean the two agree. A phone and a
+    PC that each encode "correctly" but differently cannot talk, and the
+    symptom is a stalled connection pointing nowhere near the encoder.
+    """
+    vectors = json.loads(
+        (Path(__file__).parents[2] / "protocol" / "vectors" / "envelopes.json").read_text()
+    )
+    assert vectors["cases"], "vectors file must not be empty"
+    for case in vectors["cases"]:
+        assert encode(case["type"], case["seq"], case["payload"]) == case["encoded"]
+
+
+def test_every_shared_envelope_round_trips():
+    vectors = json.loads(
+        (Path(__file__).parents[2] / "protocol" / "vectors" / "envelopes.json").read_text()
+    )
+    for case in vectors["cases"]:
+        env = decode(case["encoded"])
+        assert env.type == case["type"]
+        assert env.seq == case["seq"]
+        assert encode(env.type, env.seq, env.payload) == case["encoded"]

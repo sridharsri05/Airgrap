@@ -1,0 +1,14 @@
+{
+  "peers": [
+    {
+      "fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "name": "PADMA-PC",
+      "platform": "windows"
+    },
+    {
+      "fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "name": "iQOO Neo 10",
+      "platform": "android"
+    }
+  ]
+}
