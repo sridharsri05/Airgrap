@@ -2,6 +2,11 @@
 
 Nearly every bug in a gesture interaction lives in the timing and debouncing
 rather than in the vision model, so this is where the coverage belongs.
+
+Frames are fed with an explicit frame interval so the suite can prove the
+engine behaves identically on a slow camera and a fast one. That is not a
+theoretical concern: the development webcam measured 30fps in good light and
+10fps once auto-exposure lengthened indoors.
 """
 
 from airgrab.gesture import (
@@ -11,6 +16,10 @@ from airgrab.gesture import (
     Pose,
     State,
 )
+
+FPS_30 = 1 / 30
+FPS_10 = 1 / 10
+FPS_60 = 1 / 60
 
 
 class FakeClock:
@@ -24,179 +33,250 @@ class FakeClock:
         self.now += seconds
 
 
-def _machine(**overrides):
-    clock = FakeClock()
-    config = GestureConfig(
-        arm_frames=3, grab_frames=2, release_frames=2, catch_frames=2,
-        disarm_frames=3, hold_timeout_seconds=10.0, **overrides
-    )
-    return GrabStateMachine(config, clock=clock), clock
+class Rig:
+    """A state machine plus the clock driving it."""
+
+    def __init__(self, **overrides):
+        self.clock = FakeClock()
+        defaults = dict(
+            arm_seconds=0.10,
+            grab_seconds=0.06,
+            release_seconds=0.06,
+            catch_seconds=0.06,
+            disarm_seconds=0.10,
+            min_frames=2,
+            hold_timeout_seconds=10.0,
+        )
+        defaults.update(overrides)
+        self.machine = GrabStateMachine(GestureConfig(**defaults), clock=self.clock)
+
+    def feed(self, pose: Pose, count: int, interval: float = FPS_30):
+        events = []
+        for _ in range(count):
+            self.clock.advance(interval)
+            events.extend(self.machine.observe(pose))
+        return events
+
+    def hold(self, pose: Pose, seconds: float, interval: float = FPS_30):
+        return self.feed(pose, max(2, int(seconds / interval)), interval)
+
+    @property
+    def state(self) -> State:
+        return self.machine.state
 
 
-def _feed(machine, pose: Pose, count: int):
-    events = []
-    for _ in range(count):
-        events.extend(machine.observe(pose))
-    return events
+def _types(events):
+    return [e.type for e in events]
 
 
 def test_starts_idle():
-    machine, _ = _machine()
-    assert machine.state is State.IDLE
+    assert Rig().state is State.IDLE
 
 
-def test_open_palm_arms_after_threshold():
-    machine, _ = _machine()
-    assert _feed(machine, Pose.OPEN_PALM, 2) == []
-    events = _feed(machine, Pose.OPEN_PALM, 1)
-    assert [e.type for e in events] == [EventType.ARMED]
-    assert machine.state is State.ARMED
+def test_open_palm_arms_once_held_long_enough():
+    rig = Rig()
+    events = rig.hold(Pose.OPEN_PALM, 0.5)
+    assert _types(events) == [EventType.ARMED]
+    assert rig.state is State.ARMED
 
 
-def test_single_stray_frame_does_not_arm():
-    machine, _ = _machine()
-    for _ in range(10):
-        _feed(machine, Pose.OPEN_PALM, 1)
-        _feed(machine, Pose.NONE, 1)
-    assert machine.state is State.IDLE
+def test_brief_palm_does_not_arm():
+    rig = Rig()
+    events = rig.feed(Pose.OPEN_PALM, 2)  # ~0.07s, under the 0.10s threshold
+    assert events == []
+    assert rig.state is State.IDLE
+
+
+def test_single_stray_frame_never_arms():
+    rig = Rig()
+    for _ in range(20):
+        rig.feed(Pose.OPEN_PALM, 1)
+        rig.feed(Pose.NONE, 1)
+    assert rig.state is State.IDLE
+
+
+def test_min_frames_blocks_a_single_frame_on_a_very_slow_camera():
+    """One frame can span longer than the threshold at low fps; the frame
+    floor is what stops a lone misclassification firing a transfer."""
+    rig = Rig()
+    events = rig.feed(Pose.OPEN_PALM, 1, interval=2.0)
+    assert events == []
+    assert rig.state is State.IDLE
 
 
 def test_full_send_gesture_arms_then_grabs():
-    machine, _ = _machine()
-    _feed(machine, Pose.OPEN_PALM, 3)
-    events = _feed(machine, Pose.CLOSED_FIST, 2)
-    assert [e.type for e in events] == [EventType.GRABBED]
-    assert machine.state is State.HOLDING
+    rig = Rig()
+    rig.hold(Pose.OPEN_PALM, 0.5)
+    events = rig.hold(Pose.CLOSED_FIST, 0.3)
+    assert _types(events) == [EventType.GRABBED]
+    assert rig.state is State.HOLDING
 
 
 def test_hold_survives_the_hand_leaving_the_frame():
     """The user is carrying the file to the other device. This is the success
     path, and cancelling here would break the entire interaction."""
-    machine, _ = _machine()
-    _feed(machine, Pose.OPEN_PALM, 3)
-    _feed(machine, Pose.CLOSED_FIST, 2)
-    assert machine.state is State.HOLDING
+    rig = Rig()
+    rig.hold(Pose.OPEN_PALM, 0.5)
+    rig.hold(Pose.CLOSED_FIST, 0.3)
+    assert rig.state is State.HOLDING
 
-    _feed(machine, Pose.NONE, 100)
-    assert machine.state is State.HOLDING
+    rig.hold(Pose.NONE, 3.0)
+    assert rig.state is State.HOLDING
 
 
 def test_open_palm_after_hold_releases():
-    machine, _ = _machine()
-    _feed(machine, Pose.OPEN_PALM, 3)
-    _feed(machine, Pose.CLOSED_FIST, 2)
-    _feed(machine, Pose.NONE, 20)
-    events = _feed(machine, Pose.OPEN_PALM, 2)
-    assert [e.type for e in events] == [EventType.RELEASED]
-    assert machine.state is State.IDLE
+    rig = Rig()
+    rig.hold(Pose.OPEN_PALM, 0.5)
+    rig.hold(Pose.CLOSED_FIST, 0.3)
+    rig.hold(Pose.NONE, 1.0)
+    events = rig.hold(Pose.OPEN_PALM, 0.3)
+    assert _types(events) == [EventType.RELEASED]
+    assert rig.state is State.IDLE
 
 
 def test_withdrawing_before_grabbing_disarms():
-    machine, _ = _machine()
-    _feed(machine, Pose.OPEN_PALM, 3)
-    assert machine.state is State.ARMED
-    events = _feed(machine, Pose.NONE, 3)
-    assert [e.type for e in events] == [EventType.DISARMED]
-    assert machine.state is State.IDLE
+    rig = Rig()
+    rig.hold(Pose.OPEN_PALM, 0.5)
+    assert rig.state is State.ARMED
+    events = rig.hold(Pose.NONE, 0.4)
+    assert _types(events) == [EventType.DISARMED]
+    assert rig.state is State.IDLE
 
 
 def test_fist_without_a_preceding_palm_means_this_device_receives():
-    machine, _ = _machine()
-    events = _feed(machine, Pose.CLOSED_FIST, 2)
-    assert [e.type for e in events] == [EventType.CATCH_READY]
-    assert machine.state is State.CATCHING
+    rig = Rig()
+    events = rig.hold(Pose.CLOSED_FIST, 0.3)
+    assert _types(events) == [EventType.CATCH_READY]
+    assert rig.state is State.CATCHING
 
 
 def test_catching_completes_on_open_palm():
-    machine, _ = _machine()
-    _feed(machine, Pose.CLOSED_FIST, 2)
-    events = _feed(machine, Pose.OPEN_PALM, 2)
-    assert [e.type for e in events] == [EventType.RELEASED]
-    assert machine.state is State.IDLE
+    rig = Rig()
+    rig.hold(Pose.CLOSED_FIST, 0.3)
+    events = rig.hold(Pose.OPEN_PALM, 0.3)
+    assert _types(events) == [EventType.RELEASED]
+    assert rig.state is State.IDLE
 
 
 def test_hold_expires_after_the_timeout():
-    machine, clock = _machine()
-    _feed(machine, Pose.OPEN_PALM, 3)
-    _feed(machine, Pose.CLOSED_FIST, 2)
-    assert machine.state is State.HOLDING
+    rig = Rig()
+    rig.hold(Pose.OPEN_PALM, 0.5)
+    rig.hold(Pose.CLOSED_FIST, 0.3)
+    assert rig.state is State.HOLDING
 
-    clock.advance(11.0)
-    events = machine.tick()
-    assert [e.type for e in events] == [EventType.CANCELLED]
-    assert machine.state is State.IDLE
+    rig.clock.advance(11.0)
+    events = rig.machine.tick()
+    assert _types(events) == [EventType.CANCELLED]
+    assert rig.state is State.IDLE
 
 
 def test_tick_does_nothing_while_idle():
-    machine, clock = _machine()
-    clock.advance(1000.0)
-    assert machine.tick() == []
+    rig = Rig()
+    rig.clock.advance(1000.0)
+    assert rig.machine.tick() == []
 
 
-def test_release_does_not_immediately_refire():
-    """After a transition the streak restarts, so holding the same pose does
-    not emit the same event on every subsequent frame."""
-    machine, _ = _machine()
-    _feed(machine, Pose.OPEN_PALM, 3)
-    _feed(machine, Pose.CLOSED_FIST, 2)
-    _feed(machine, Pose.OPEN_PALM, 2)  # RELEASED
-    events = _feed(machine, Pose.OPEN_PALM, 10)
-    # Palm held long enough re-arms exactly once; it must not release again.
-    assert [e.type for e in events] == [EventType.ARMED]
+def test_palm_left_up_after_a_release_starts_nothing_new():
+    """Your hand is still open the instant after you release. Re-arming there
+    would begin a gesture you never made."""
+    rig = Rig()
+    rig.hold(Pose.OPEN_PALM, 0.5)
+    rig.hold(Pose.CLOSED_FIST, 0.3)
+    released = rig.hold(Pose.OPEN_PALM, 0.3)
+    assert _types(released) == [EventType.RELEASED]
+
+    events = rig.hold(Pose.OPEN_PALM, 2.0)
+    assert events == []
+    assert rig.state is State.IDLE
+
+
+def test_changing_the_hand_clears_the_refractory_period():
+    """The lock-out ends as soon as the pose changes, so a deliberate second
+    gesture still works immediately."""
+    rig = Rig()
+    rig.hold(Pose.OPEN_PALM, 0.5)
+    rig.hold(Pose.CLOSED_FIST, 0.3)
+    rig.hold(Pose.OPEN_PALM, 0.3)  # RELEASED
+
+    rig.hold(Pose.NONE, 0.3)       # hand lowered
+    events = rig.hold(Pose.OPEN_PALM, 0.5)
+    assert _types(events) == [EventType.ARMED]
+    assert rig.state is State.ARMED
 
 
 def test_arming_does_not_refire_while_the_palm_stays_up():
-    machine, _ = _machine()
-    _feed(machine, Pose.OPEN_PALM, 3)
-    events = _feed(machine, Pose.OPEN_PALM, 30)
+    rig = Rig()
+    rig.hold(Pose.OPEN_PALM, 0.5)
+    events = rig.hold(Pose.OPEN_PALM, 2.0)
     assert events == []
-    assert machine.state is State.ARMED
+    assert rig.state is State.ARMED
 
 
 def test_other_poses_are_ignored():
-    machine, _ = _machine()
-    _feed(machine, Pose.OTHER, 50)
-    assert machine.state is State.IDLE
+    rig = Rig()
+    rig.hold(Pose.OTHER, 3.0)
+    assert rig.state is State.IDLE
 
 
-def test_interrupted_palm_streak_restarts_the_count():
-    machine, _ = _machine()
-    _feed(machine, Pose.OPEN_PALM, 2)
-    _feed(machine, Pose.OTHER, 1)
-    _feed(machine, Pose.OPEN_PALM, 2)
-    assert machine.state is State.IDLE
-    _feed(machine, Pose.OPEN_PALM, 1)
-    assert machine.state is State.ARMED
+def test_interrupted_palm_streak_restarts_the_clock():
+    rig = Rig()
+    rig.feed(Pose.OPEN_PALM, 2)
+    rig.feed(Pose.OTHER, 1)
+    rig.feed(Pose.OPEN_PALM, 2)
+    assert rig.state is State.IDLE
+    rig.hold(Pose.OPEN_PALM, 0.5)
+    assert rig.state is State.ARMED
 
 
 def test_reset_returns_to_idle():
-    machine, _ = _machine()
-    _feed(machine, Pose.OPEN_PALM, 3)
-    _feed(machine, Pose.CLOSED_FIST, 2)
-    machine.reset()
-    assert machine.state is State.IDLE
+    rig = Rig()
+    rig.hold(Pose.OPEN_PALM, 0.5)
+    rig.hold(Pose.CLOSED_FIST, 0.3)
+    rig.machine.reset()
+    assert rig.state is State.IDLE
+
+
+def test_behaviour_is_identical_at_10fps_and_60fps():
+    """The reason thresholds are durations rather than frame counts.
+
+    The same wall-clock gesture must produce the same events whether the
+    camera manages 10fps in a dim room or 60fps in daylight.
+    """
+    results = {}
+    for label, interval in (("10fps", FPS_10), ("60fps", FPS_60)):
+        rig = Rig()
+        events = []
+        events += rig.hold(Pose.OPEN_PALM, 0.5, interval)
+        events += rig.hold(Pose.CLOSED_FIST, 0.4, interval)
+        events += rig.hold(Pose.NONE, 1.5, interval)
+        events += rig.hold(Pose.OPEN_PALM, 0.4, interval)
+        results[label] = (_types(events), rig.state)
+
+    assert results["10fps"] == results["60fps"]
+    assert results["10fps"][0] == [
+        EventType.ARMED,
+        EventType.GRABBED,
+        EventType.RELEASED,
+    ]
 
 
 def test_a_realistic_full_round_trip():
     """Sender: present, grab, carry away. Receiver: fist arrives, palm opens."""
-    sender, _ = _machine()
-    receiver, _ = _machine()
+    sender = Rig()
+    receiver = Rig()
 
     sender_events = []
-    sender_events += _feed(sender, Pose.NONE, 10)
-    sender_events += _feed(sender, Pose.OPEN_PALM, 5)
-    sender_events += _feed(sender, Pose.CLOSED_FIST, 3)
-    sender_events += _feed(sender, Pose.NONE, 30)
+    sender_events += sender.hold(Pose.NONE, 0.5)
+    sender_events += sender.hold(Pose.OPEN_PALM, 0.4)
+    sender_events += sender.hold(Pose.CLOSED_FIST, 0.3)
+    sender_events += sender.hold(Pose.NONE, 1.5)
 
     receiver_events = []
-    receiver_events += _feed(receiver, Pose.NONE, 25)
-    receiver_events += _feed(receiver, Pose.CLOSED_FIST, 4)
-    receiver_events += _feed(receiver, Pose.OPEN_PALM, 3)
+    receiver_events += receiver.hold(Pose.NONE, 1.0)
+    receiver_events += receiver.hold(Pose.CLOSED_FIST, 0.3)
+    receiver_events += receiver.hold(Pose.OPEN_PALM, 0.3)
 
-    assert [e.type for e in sender_events] == [EventType.ARMED, EventType.GRABBED]
-    assert [e.type for e in receiver_events] == [
-        EventType.CATCH_READY,
-        EventType.RELEASED,
-    ]
+    assert _types(sender_events) == [EventType.ARMED, EventType.GRABBED]
+    assert _types(receiver_events) == [EventType.CATCH_READY, EventType.RELEASED]
     assert sender.state is State.HOLDING
     assert receiver.state is State.IDLE

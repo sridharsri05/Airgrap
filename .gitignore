@@ -7,3 +7,4 @@ dist/
 build/
 *.spec
 airgrab-data/
+desktop/models/

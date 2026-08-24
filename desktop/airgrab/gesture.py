@@ -61,18 +61,25 @@ class GestureEvent:
 
 @dataclass(frozen=True)
 class GestureConfig:
-    """Frame counts are consecutive-frame thresholds, not totals.
+    """Thresholds are durations, not frame counts.
 
-    Debouncing by consecutive frames is what stops a single misclassified
-    frame from firing a transfer. At 30fps the defaults below correspond to
-    roughly 0.2s to arm and 0.13s to grab: deliberate, but not sluggish.
+    Frame counts look natural here and are the wrong abstraction. Measured on
+    real hardware, the same webcam delivers 30fps in good light and 10fps once
+    auto-exposure lengthens indoors — so a 6-frame threshold silently changes
+    from 0.2s to 0.6s as the room gets darker, and changes again on a
+    different machine. Durations behave identically everywhere.
+
+    `min_frames` remains as a floor: a duration alone would let a single
+    misclassified frame satisfy the threshold on a slow camera, so a pose must
+    be seen at least twice however long it lasted.
     """
 
-    arm_frames: int = 6
-    grab_frames: int = 4
-    release_frames: int = 4
-    catch_frames: int = 4
-    disarm_frames: int = 8
+    arm_seconds: float = 0.20
+    grab_seconds: float = 0.13
+    release_seconds: float = 0.13
+    catch_seconds: float = 0.13
+    disarm_seconds: float = 0.27
+    min_frames: int = 2
     hold_timeout_seconds: float = 20.0
 
 
@@ -87,7 +94,9 @@ class GrabStateMachine:
         self._state = State.IDLE
         self._streak_pose: Pose | None = None
         self._streak_count = 0
+        self._streak_started = 0.0
         self._held_since = 0.0
+        self._refractory_pose: Pose | None = None
 
     @property
     def state(self) -> State:
@@ -97,18 +106,30 @@ class GrabStateMachine:
         self._state = State.IDLE
         self._streak_pose = None
         self._streak_count = 0
+        self._streak_started = 0.0
         self._held_since = 0.0
+        self._refractory_pose = None
 
     def observe(self, pose: Pose) -> list[GestureEvent]:
         """Feed one frame's classification. Returns any events it triggered."""
+        now = self._clock()
         if pose == self._streak_pose:
             self._streak_count += 1
         else:
             self._streak_pose = pose
             self._streak_count = 1
+            self._streak_started = now
+
+        # After a gesture completes, the hand is usually still in the pose
+        # that ended it — a palm stays open right after a release. Acting on
+        # that immediately would start a fresh gesture the user never made, so
+        # the hand must change before anything new can begin.
+        if self._refractory_pose is not None:
+            if pose is self._refractory_pose:
+                return []
+            self._refractory_pose = None
 
         events: list[GestureEvent] = []
-        now = self._clock()
 
         # A hold that never ends would leave the UI stuck showing a grabbed
         # item forever, so it expires on its own.
@@ -118,9 +139,9 @@ class GrabStateMachine:
                 return events
 
         if self._state is State.IDLE:
-            if self._streak_is(Pose.OPEN_PALM, self.config.arm_frames):
+            if self._streak_is(Pose.OPEN_PALM, self.config.arm_seconds, now):
                 events.append(self._transition(EventType.ARMED, State.ARMED, now))
-            elif self._streak_is(Pose.CLOSED_FIST, self.config.catch_frames):
+            elif self._streak_is(Pose.CLOSED_FIST, self.config.catch_seconds, now):
                 # A closed hand we never saw open: someone is arriving with
                 # something, so this device is the destination.
                 self._held_since = now
@@ -130,22 +151,22 @@ class GrabStateMachine:
             return events
 
         if self._state is State.ARMED:
-            if self._streak_is(Pose.CLOSED_FIST, self.config.grab_frames):
+            if self._streak_is(Pose.CLOSED_FIST, self.config.grab_seconds, now):
                 self._held_since = now
                 events.append(self._transition(EventType.GRABBED, State.HOLDING, now))
-            elif self._streak_is(Pose.NONE, self.config.disarm_frames):
+            elif self._streak_is(Pose.NONE, self.config.disarm_seconds, now):
                 events.append(self._transition(EventType.DISARMED, State.IDLE, now))
             return events
 
         if self._state is State.HOLDING:
             # Pose.NONE is deliberately not handled here: the hand leaving the
             # frame is the user carrying the file to the other device.
-            if self._streak_is(Pose.OPEN_PALM, self.config.release_frames):
+            if self._streak_is(Pose.OPEN_PALM, self.config.release_seconds, now):
                 events.append(self._transition(EventType.RELEASED, State.IDLE, now))
             return events
 
         if self._state is State.CATCHING:
-            if self._streak_is(Pose.OPEN_PALM, self.config.release_frames):
+            if self._streak_is(Pose.OPEN_PALM, self.config.release_seconds, now):
                 events.append(self._transition(EventType.RELEASED, State.IDLE, now))
             return events
 
@@ -162,18 +183,25 @@ class GrabStateMachine:
 
     # ------------------------------------------------------------- internals
 
-    def _streak_is(self, pose: Pose, threshold: int) -> bool:
-        return self._streak_pose is pose and self._streak_count >= threshold
+    def _streak_is(self, pose: Pose, seconds: float, now: float) -> bool:
+        if self._streak_pose is not pose:
+            return False
+        if self._streak_count < self.config.min_frames:
+            return False
+        return (now - self._streak_started) >= seconds
 
     def _transition(
         self, event: EventType, to_state: State, now: float
     ) -> GestureEvent:
         from_state = self._state
         self._state = to_state
+        if to_state is State.IDLE and from_state is not State.IDLE:
+            self._refractory_pose = self._streak_pose
         # A completed transition must not immediately re-fire on the next
         # frame of the same pose, so the streak restarts here.
         self._streak_count = 0
         self._streak_pose = None
+        self._streak_started = now
         if to_state is State.IDLE:
             self._held_since = 0.0
         return GestureEvent(
