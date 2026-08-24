@@ -13,6 +13,7 @@ transfer. This module only connects them and tells the user what happened.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import threading
 from pathlib import Path
@@ -29,9 +30,33 @@ from airgrab.ui.tray import Tray
 from airgrab.windows import ensure_firewall_rule
 
 
+def _configure_logging(data_dir: Path) -> logging.Logger:
+    """Write a log file, because this application has no console.
+
+    It is packaged with --noconsole, so a print goes nowhere and a traceback
+    dies with the thread that raised it. Diagnosing anything — why the camera
+    sees no hand, why a transfer failed — otherwise means guessing. The phone
+    has logcat; this is the desktop's equivalent.
+    """
+    data_dir.mkdir(parents=True, exist_ok=True)
+    logger = logging.getLogger("airgrab")
+    if logger.handlers:
+        return logger
+
+    logger.setLevel(logging.INFO)
+    handler = logging.FileHandler(data_dir / "airgrab.log", encoding="utf-8")
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s %(message)s", "%H:%M:%S")
+    )
+    logger.addHandler(handler)
+    return logger
+
+
 class AirGrabApp:
     def __init__(self) -> None:
         self._data_dir = default_data_dir()
+        self._log = _configure_logging(self._data_dir)
+        self._last_pose = None
         self._settings = load_settings(self._data_dir / "settings.json")
         self._peers: dict[str, DiscoveredPeer] = {}
         # The tray balloon is easy to miss and can be suppressed by focus
@@ -121,8 +146,9 @@ class AirGrabApp:
             return
 
         read, classify, close = parts
+        self._log.info("camera opened")
         self._camera = GestureCameraLoop(
-            observe=self._session.observe,
+            observe=self._observe_pose,
             loop=self._loop,
             read=read,
             classify=classify,
@@ -175,6 +201,7 @@ class AirGrabApp:
     # ---------------------------------------------------------------- peers
 
     def _on_peer_found(self, peer: DiscoveredPeer) -> None:
+        self._log.info("found %s at %s:%s", peer.name, peer.host, peer.port)
         self._peers[peer.fingerprint] = peer
         if not self._node.trust.is_trusted(peer.fingerprint):
             self._tray.set_status(f"{peer.name} found — not paired yet", "idle")
@@ -206,7 +233,20 @@ class AirGrabApp:
 
     # -------------------------------------------------------------- feedback
 
+    async def _observe_pose(self, pose) -> None:
+        """Log pose CHANGES, then hand the frame on.
+
+        Per-frame logging at twenty frames a second buries everything else and
+        slows the loop being measured. What anyone debugging needs is whether
+        the camera saw a fist at all, and when.
+        """
+        if pose is not self._last_pose:
+            self._last_pose = pose
+            self._log.info("hand: %s", getattr(pose, "name", pose))
+        await self._session.observe(pose)
+
     def _on_gesture_event(self, event: GestureEvent) -> None:
+        self._log.info("gesture: %s", event.type.name)
         """The user cannot see the state machine, so the tray has to show it.
 
         Without this the gesture feels broken while it is working perfectly:
@@ -247,6 +287,7 @@ class AirGrabApp:
             self._tray.set_status("Gestures unavailable", "problem")
 
     def _on_file_received(self, path: Path) -> None:
+        self._log.info("received %s", path.name)
         self._tray.notify(f"Received {path.name}")
         self._overlay.show("received", f"Received {path.name}")
 

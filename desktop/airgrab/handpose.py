@@ -44,7 +44,11 @@ class HandPoseDetector:
     def __init__(
         self,
         model_path: Path | None = None,
-        min_confidence: float = 0.5,
+        # 0.35, matching the Android side. At 0.5 a clearly-made palm scored
+        # below the bar and arrived as OTHER, so the gesture never fired while
+        # the user was doing it correctly. Lowering it is safe here because a
+        # misread pose still has to hold steady for the state machine to act.
+        min_confidence: float = 0.35,
     ) -> None:
         path = Path(model_path or DEFAULT_MODEL_PATH)
         if not path.exists():
