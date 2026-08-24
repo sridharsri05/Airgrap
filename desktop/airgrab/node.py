@@ -23,6 +23,7 @@ import aiohttp
 from aiohttp import web
 
 from airgrab import auth
+from airgrab.coordinator import GestureMessage
 from airgrab.identity import DeviceIdentity
 from airgrab.protocol import (
     PROTOCOL_VERSION,
@@ -45,6 +46,9 @@ from airgrab.transfer import (
 from airgrab.trust import TrustStore
 
 PLATFORM = "windows"
+_GESTURE_TYPES = frozenset(
+    {GestureMessage.HOLD, GestureMessage.HOLD_END, GestureMessage.RELEASE}
+)
 PROGRESS_INTERVAL_SECONDS = 0.25
 UPLOAD_CHUNK = 256 * 1024
 
@@ -86,6 +90,13 @@ class Node:
         self.tickets = TicketStore()
         self.on_incoming_file: Callable[[Path], None] | None = None
         self.on_pair_request: Callable[[str, str], bool] | None = None
+        # Gesture messages arrive over whichever direction the control channel
+        # was opened in, so both the server side and outbound links feed this.
+        self.on_peer_gesture: Callable[[str, str, dict], None] | None = None
+
+        # Control channels currently open, by peer fingerprint.
+        self._inbound: dict[str, tuple] = {}
+        self._links: dict[str, "PeerLink"] = {}
 
         # Per-instance, never class-level: two Nodes in one process (the
         # loopback tests, and any future multi-peer support) must not share
@@ -128,6 +139,7 @@ class Node:
         return self.config.port
 
     async def stop(self) -> None:
+        await self.close_links()
         if self._runner is not None:
             await self._runner.cleanup()
             self._runner = None
@@ -155,6 +167,8 @@ class Node:
                     )
                 break
 
+        if session.peer_fp and self._inbound.get(session.peer_fp, (None,))[0] is ws:
+            self._inbound.pop(session.peer_fp, None)
         return ws
 
     async def _send(self, ws, session: _Session, type: str, payload: dict) -> None:
@@ -215,6 +229,8 @@ class Node:
                 claimed_client_fp=session.peer_fp,
             )
             session.authenticated = result.ok
+            if result.ok and self.trust.is_trusted(session.peer_fp):
+                self._inbound[session.peer_fp] = (ws, session)
             if not result.ok:
                 await self._send(
                     ws, session, MessageType.ERROR,
@@ -269,6 +285,13 @@ class Node:
             self._pending_names[ticket] = str(payload.get("name", "received"))
             self._pending_sockets[ticket] = (ws, session)
             await self._send(ws, session, MessageType.OFFER_ACCEPT, {"ticket": ticket})
+            return
+
+        if env.type in _GESTURE_TYPES:
+            # Only paired devices may drive gestures. An unpaired peer cannot
+            # reach here anyway, but the check keeps the rule local.
+            if self.trust.is_trusted(session.peer_fp) and self.on_peer_gesture:
+                self.on_peer_gesture(session.peer_fp, env.type, payload)
             return
 
         if env.type == MessageType.PING:
@@ -347,6 +370,58 @@ class Node:
         self.tickets.discard(ticket_value)
         self._pending_names.pop(ticket_value, None)
         self._pending_sockets.pop(ticket_value, None)
+
+    # ------------------------------------------------------------- messaging
+
+    def connected_peers(self) -> list[str]:
+        return sorted(set(self._inbound) | set(self._links))
+
+    async def send_to_peer(self, peer_fp: str, type: str, payload: dict) -> bool:
+        """Deliver a message over whichever control channel reaches this peer.
+
+        A pair of devices may be connected in either direction depending on who
+        discovered whom first, so both are tried.
+        """
+        link = self._links.get(peer_fp)
+        if link is not None:
+            try:
+                await link.send(type, payload)
+                return True
+            except Exception:
+                self._links.pop(peer_fp, None)
+
+        entry = self._inbound.get(peer_fp)
+        if entry is not None:
+            ws, session = entry
+            try:
+                await self._send(ws, session, type, payload)
+                return True
+            except Exception:
+                self._inbound.pop(peer_fp, None)
+
+        return False
+
+    async def broadcast(self, type: str, payload: dict) -> int:
+        delivered = 0
+        for peer_fp in self.connected_peers():
+            if await self.send_to_peer(peer_fp, type, payload):
+                delivered += 1
+        return delivered
+
+    async def open_link(
+        self, host: str, port: int, expect_fp: str | None = None
+    ) -> "PeerLink":
+        """Open a control channel and keep it open, reading messages as they
+        arrive. This is what gesture events travel over."""
+        link = PeerLink(self, host, port, expect_fp)
+        await link.open()
+        self._links[link.peer_fp] = link
+        return link
+
+    async def close_links(self) -> None:
+        for link in list(self._links.values()):
+            await link.close()
+        self._links.clear()
 
     # ---------------------------------------------------------------- client
 
@@ -530,3 +605,69 @@ class Node:
                     return bool(env.payload.get("ok"))
                 elif env.type == MessageType.ERROR:
                     return False
+
+
+class PeerLink:
+    """A control channel held open for as long as the peer is around.
+
+    Transfers open their own short-lived connection; this one exists so that
+    gesture events can arrive unprompted. Re-dialling per event would add
+    handshake latency to an interaction measured in tenths of a second.
+    """
+
+    def __init__(
+        self, node: Node, host: str, port: int, expect_fp: str | None = None
+    ) -> None:
+        self._node = node
+        self._host = host
+        self._port = port
+        self._expect_fp = expect_fp
+        self.peer_fp: str = ""
+        self._send = None
+        self._task: asyncio.Task | None = None
+        self._ready: asyncio.Future | None = None
+        self._closing = False
+
+    async def open(self) -> None:
+        loop = asyncio.get_running_loop()
+        self._ready = loop.create_future()
+        self._task = asyncio.create_task(self._run())
+        await self._ready  # raises whatever the handshake raised
+
+    async def _run(self) -> None:
+        try:
+            async with self._node._connect(
+                self._host, self._port, expect_fp=self._expect_fp
+            ) as (_http, _ws, send, recv, peer_fp, _ack):
+                self.peer_fp = peer_fp
+                self._send = send
+                if self._ready is not None and not self._ready.done():
+                    self._ready.set_result(None)
+
+                while not self._closing:
+                    envelope = await recv()
+                    if envelope.type in _GESTURE_TYPES:
+                        handler = self._node.on_peer_gesture
+                        if handler is not None and self._node.trust.is_trusted(peer_fp):
+                            handler(peer_fp, envelope.type, envelope.payload)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            if self._ready is not None and not self._ready.done():
+                self._ready.set_exception(exc)
+        finally:
+            self._node._links.pop(self.peer_fp, None)
+
+    async def send(self, type: str, payload: dict) -> None:
+        if self._send is None:
+            raise ConnectionError("link is not open")
+        await self._send(type, payload)
+
+    async def close(self) -> None:
+        self._closing = True
+        if self._task is not None:
+            self._task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._task
+            self._task = None
+        self._send = None
