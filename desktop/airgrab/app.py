@@ -56,6 +56,7 @@ class AirGrabApp:
             on_open_downloads=self._open_downloads,
             on_pair=self._pair_with_first_peer,
             on_quit=self.stop,
+            on_settings=self._open_settings,
         )
         self._advertiser: Advertiser | None = None
         self._browser: Browser | None = None
@@ -238,6 +239,18 @@ class AirGrabApp:
     def _open_downloads(self) -> None:
         self._settings.download_dir.mkdir(parents=True, exist_ok=True)
         os.startfile(str(self._settings.download_dir))  # noqa: S606 - Windows only
+
+    def _open_settings(self) -> None:
+        """Opened from the tray thread, which is where tkinter must run.
+
+        Most settings only take effect on restart, which the window says
+        itself; nothing here tries to apply them live.
+        """
+        from airgrab.ui.settings import open_settings_window
+
+        saved = open_settings_window(self._data_dir / "settings.json")
+        if saved is not None:
+            self._tray.notify("Settings saved. Restart AirGrab to apply them.")
 
     def _pair_with_first_peer(self) -> None:
         unpaired = [

@@ -36,6 +36,7 @@ class Tray:
         on_open_downloads: Callable[[], None],
         on_pair: Callable[[], None],
         on_quit: Callable[[], None],
+        on_settings: Callable[[], None] | None = None,
     ) -> None:
         self._status = "Starting..."
         self._icon = pystray.Icon(
@@ -47,6 +48,11 @@ class Tray:
                 pystray.Menu.SEPARATOR,
                 pystray.MenuItem("Pair a device...", lambda: on_pair()),
                 pystray.MenuItem("Open received files", lambda: on_open_downloads()),
+                pystray.MenuItem(
+                    "Settings...",
+                    lambda: on_settings() if on_settings else None,
+                    visible=on_settings is not None,
+                ),
                 pystray.Menu.SEPARATOR,
                 pystray.MenuItem("Quit", lambda: on_quit()),
             ),
