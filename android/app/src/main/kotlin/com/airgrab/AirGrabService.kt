@@ -208,7 +208,13 @@ class AirGrabService : LifecycleService() {
                 node = started,
                 scope = scope,
                 peerLookup = { fingerprint -> discovery?.peers()?.firstOrNull { it.fingerprint == fingerprint } },
-                onContentWanted = { PendingContent.current() },
+                onContentWanted = {
+                    // Shared something? Send exactly that — any file, any
+                    // type. Otherwise fall back to the most recent photo,
+                    // which is the case worth having no steps at all: take a
+                    // photo, make a fist, it is on the PC.
+                    PendingContent.current() ?: PhotoLibrary.holdLatest(this)
+                },
                 onStatus = { text ->
                     activity = text
                     // The one outcome the user most needs to feel: the file

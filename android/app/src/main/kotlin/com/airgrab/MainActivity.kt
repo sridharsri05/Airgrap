@@ -4,6 +4,8 @@ import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.drawable.GradientDrawable
+import android.widget.HorizontalScrollView
+import android.widget.ImageView
 import android.net.Uri
 import android.os.Bundle
 import android.view.View
@@ -36,6 +38,10 @@ import kotlinx.coroutines.launch
  * gesture that did not work explainable rather than mysterious — but they sit
  * at the bottom, folded away.
  */
+private const val PICK_HINT =
+    "Make a fist to send this. Tap another photo to choose it, or share " +
+        "any file to AirGrab from another app."
+
 class MainActivity : AppCompatActivity() {
 
     private lateinit var root: LinearLayout
@@ -45,6 +51,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var stateDetail: TextView
 
     private lateinit var contentText: TextView
+    private lateinit var photoStrip: LinearLayout
+    private lateinit var photoHint: TextView
     private lateinit var devicesCard: LinearLayout
     private lateinit var devicesList: LinearLayout
 
@@ -76,6 +84,7 @@ class MainActivity : AppCompatActivity() {
         // permission itself, and without the notification permission Android
         // may stop it later — but refusing to start at all helps nobody.
         AirGrabService.start(this)
+        refreshPhotos()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -90,7 +99,11 @@ class MainActivity : AppCompatActivity() {
         // why. Only while this screen is actually in front of them.
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
-        val wanted = listOf(Manifest.permission.POST_NOTIFICATIONS, Manifest.permission.CAMERA)
+        val wanted = listOf(
+            Manifest.permission.POST_NOTIFICATIONS,
+            Manifest.permission.CAMERA,
+            PhotoLibrary.permission,
+        )
         val missing = wanted.filter {
             ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
         }
@@ -113,6 +126,7 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         refreshWarning()
+        refreshPhotos()
         // Checked on every resume: the user grants this in Settings and comes
         // back, so there is no result to listen for.
         overlayCard.visibility =
@@ -152,18 +166,23 @@ class MainActivity : AppCompatActivity() {
             addView(stateDetail)
         }
 
-        contentText = Style.body(this, "Nothing selected")
+        contentText = Style.body(this, "Your most recent photo")
+        photoStrip = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        photoHint = Style.body(this, PICK_HINT)
+
         val contentCard = Style.card(this).apply {
             addView(Style.title(this@MainActivity, "READY TO SEND"))
             addView(Style.spacer(this@MainActivity, 8))
             addView(contentText)
             addView(Style.spacer(this@MainActivity, 12))
             addView(
-                Style.body(
-                    this@MainActivity,
-                    "Share a photo or file to AirGrab, then make a fist at the camera.",
-                )
+                HorizontalScrollView(this@MainActivity).apply {
+                    isHorizontalScrollBarEnabled = false
+                    addView(photoStrip)
+                }
             )
+            addView(Style.spacer(this@MainActivity, 12))
+            addView(photoHint)
         }
 
         devicesList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -311,6 +330,8 @@ class MainActivity : AppCompatActivity() {
 
         contentText.text = PendingContent.current()?.let {
             "${it.name}  (${humanSize(it.length())})"
+        } ?: PhotoLibrary.latest(this)?.let {
+            "${it.name}  (${humanSize(it.size)})  - your latest photo"
         } ?: "Nothing selected"
 
         renderDevices(service, node)
@@ -401,6 +422,91 @@ class MainActivity : AppCompatActivity() {
             if (held == null) "Could not read that file" else "Ready to send ${held.name}",
             Toast.LENGTH_LONG,
         ).show()
+    }
+
+    // ---------------------------------------------------------------- photos
+
+    /**
+     * A strip of recent photos, so choosing a different one is a single tap.
+     *
+     * Rebuilt on resume rather than cached: the user has just come back from
+     * another app, quite possibly having taken the very photo they want to
+     * send, and a cached strip would not contain it.
+     */
+    private fun refreshPhotos() {
+        if (!::photoStrip.isInitialized) return
+        photoStrip.removeAllViews()
+
+        if (!PhotoLibrary.permitted(this)) {
+            photoHint.text = "Allow access to your photos to send them with a gesture."
+            photoStrip.addView(
+                plainButton("Allow photos") {
+                    requestPermissions.launch(arrayOf(PhotoLibrary.permission))
+                }
+            )
+            return
+        }
+
+        photoHint.text = PICK_HINT
+        val edge = Style.dp(this, 76)
+
+        lifecycleScope.launch(Dispatchers.IO) {
+            val photos = PhotoLibrary.recent(this@MainActivity, limit = 12)
+            val thumbnails = photos.map {
+                it to PhotoLibrary.thumbnail(this@MainActivity, it, edge)
+            }
+
+            runOnUiThread {
+                if (thumbnails.isEmpty()) {
+                    photoStrip.addView(Style.body(this@MainActivity, "No photos found."))
+                    return@runOnUiThread
+                }
+                thumbnails.forEach { (photo, bitmap) ->
+                    photoStrip.addView(thumbnailView(photo, bitmap, edge))
+                }
+            }
+        }
+    }
+
+    private fun thumbnailView(
+        photo: PhotoLibrary.Photo,
+        bitmap: android.graphics.Bitmap?,
+        edge: Int,
+    ): ImageView {
+        val radius = Style.dp(this, 10).toFloat()
+        return ImageView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(edge, edge).apply {
+                rightMargin = Style.dp(this@MainActivity, 8)
+            }
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            background = GradientDrawable().apply {
+                cornerRadius = radius
+                setColor(Style.divider(this@MainActivity))
+            }
+            clipToOutline = true
+            outlineProvider = object : android.view.ViewOutlineProvider() {
+                override fun getOutline(view: View, outline: android.graphics.Outline) {
+                    outline.setRoundRect(0, 0, view.width, view.height, radius)
+                }
+            }
+            if (bitmap != null) setImageBitmap(bitmap)
+            setOnClickListener { choose(photo) }
+        }
+    }
+
+    /** Copy the chosen photo into the outgoing slot, off the main thread. */
+    private fun choose(photo: PhotoLibrary.Photo) {
+        lifecycleScope.launch(Dispatchers.IO) {
+            val held = PendingContent.accept(this@MainActivity, photo.uri)
+            runOnUiThread {
+                Toast.makeText(
+                    this@MainActivity,
+                    if (held == null) "Could not read that photo"
+                    else "Ready to send ${held.name}",
+                    Toast.LENGTH_SHORT,
+                ).show()
+            }
+        }
     }
 
     // ---------------------------------------------------------------- pairing

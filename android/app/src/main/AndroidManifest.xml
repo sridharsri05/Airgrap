@@ -17,6 +17,16 @@
 
     <!-- The gesture is made while looking somewhere else, so the only
          feedback that reaches the user is one they can feel. -->
+    <!-- So a gesture can send the real photo file rather than a screenshot.
+         Android will not tell an app which photo another app is showing, so
+         the library is read directly: the most recent photo, or one the user
+         picks. READ_EXTERNAL_STORAGE covers Android 12, where the media-
+         specific permission does not yet exist. -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+
     <uses-permission android:name="android.permission.VIBRATE" />
 
     <!-- Draws the gesture indicator over whatever the user is actually
