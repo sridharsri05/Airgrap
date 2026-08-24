@@ -40,6 +40,16 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+
+            <!-- A grab picks up whatever was shared here. A phone has no
+                 single "thing on screen" the way a desktop does, so the user
+                 points at what they mean using the share sheet they already
+                 know. -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
         </activity>
 
         <!-- connectedDevice, not dataSync: a dataSync service is capped at six

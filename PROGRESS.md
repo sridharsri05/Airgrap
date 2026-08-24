@@ -33,12 +33,17 @@ launches and listens on 0.0.0.0:53421.
 | Finding the PC on Wi-Fi | done |
 | Background service | done |
 | Camera + hand tracking | done |
-| Gesture-to-transfer wiring | next |
+| Gesture-to-transfer wiring | done |
 | Screen | status screen only |
 
 Verified on loopback: two nodes with real certificates paired, showed the
 same six digits on both sides, and transferred 700,000 bytes with a matching
 SHA-256. An unpaired device was refused; naming the wrong device aborted.
+
+Verified end to end on loopback: a grab on one device and a release on the
+other moved a 300,000 byte file, hash verified. Releasing on the device that
+grabbed sends nothing; releasing with nothing held sends nothing; a hold
+nobody catches expires.
 
 ## Waiting on a handset
 
@@ -57,4 +62,4 @@ These cannot be closed without the phone plugged in.
 ## Counts
 
 - Python: 176 tests
-- Kotlin: 146 tests
+- Kotlin: 151 tests

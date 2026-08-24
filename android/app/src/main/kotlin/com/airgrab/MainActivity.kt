@@ -1,7 +1,9 @@
 package com.airgrab
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Bundle
 import android.text.method.ScrollingMovementMethod
 import android.view.Gravity
@@ -39,6 +41,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var gesture: TextView
     private lateinit var warning: TextView
     private lateinit var fixButton: Button
+    private lateinit var pairButton: Button
 
     private var detector: HandPoseDetector? = null
     private var camera: GestureCamera? = null
@@ -75,6 +78,7 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(buildLayout())
+        acceptShare(intent)
 
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
             != PackageManager.PERMISSION_GRANTED
@@ -93,6 +97,27 @@ class MainActivity : AppCompatActivity() {
         } else {
             requestCamera.launch(Manifest.permission.CAMERA)
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        // The activity is singleTop in practice: sharing twice must replace
+        // what is held, not stack a second copy of the screen.
+        setIntent(intent)
+        acceptShare(intent)
+    }
+
+    /** A file shared to AirGrab becomes what the next grab picks up. */
+    private fun acceptShare(intent: Intent?) {
+        if (intent?.action != Intent.ACTION_SEND) return
+        val uri = intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java) ?: return
+
+        val held = PendingContent.accept(this, uri)
+        Toast.makeText(
+            this,
+            if (held == null) "Could not read that file" else "Ready to send ${held.name}",
+            Toast.LENGTH_LONG,
+        ).show()
     }
 
     override fun onDestroy() {
@@ -144,6 +169,12 @@ class MainActivity : AppCompatActivity() {
             setOnClickListener { openBackgroundSettings() }
         }
 
+        pairButton = Button(this).apply {
+            text = "Pair"
+            visibility = android.view.View.GONE
+            setOnClickListener { pairWithFirstUnpaired() }
+        }
+
         val stopButton = Button(this).apply {
             text = "Stop AirGrab"
             setOnClickListener {
@@ -159,6 +190,7 @@ class MainActivity : AppCompatActivity() {
             addView(heading)
             addView(gesture)
             addView(status)
+            addView(pairButton)
             addView(warning)
             addView(fixButton)
             addView(stopButton)
@@ -174,6 +206,9 @@ class MainActivity : AppCompatActivity() {
             while (true) {
                 status.text = describe()
                 gesture.text = describeGesture()
+                pairButton.visibility =
+                    if (firstUnpaired() != null) android.view.View.VISIBLE
+                    else android.view.View.GONE
                 delay(250)
             }
         }
@@ -187,6 +222,11 @@ class MainActivity : AppCompatActivity() {
             ?: return "Starting the link..."
 
         return buildString {
+            appendLine(service.activity)
+            appendLine()
+            PendingContent.current()?.let { appendLine("Ready to send: ${it.name}") }
+                ?: appendLine("Nothing to send - share a file to AirGrab")
+            appendLine()
             appendLine("Listening on port ${node.port}")
             appendLine("This device: ${node.identity.fingerprint.take(16)}")
             appendLine()
@@ -230,7 +270,12 @@ class MainActivity : AppCompatActivity() {
             context = this,
             detector = loaded,
             stateMachine = stateMachine,
-            onEvent = { event -> recordEvent(event) },
+            onEvent = { event ->
+                recordEvent(event)
+                // The service owns the coordinator, because a gesture must
+                // still work when this screen is not on top.
+                AirGrabService.current?.onGesture(event)
+            },
             onPose = { pose -> livePose = pose },
         ).also { it.start(this, front = true) }
     }
@@ -257,6 +302,45 @@ class MainActivity : AppCompatActivity() {
                 appendLine()
                 appendLine("Recent:")
                 events.forEach { appendLine("  $it") }
+            }
+        }
+    }
+
+    // --------------------------------------------------------------- pairing
+
+    private fun firstUnpaired(): com.airgrab.core.DiscoveredPeer? {
+        val service = AirGrabService.current ?: return null
+        val node = service.node ?: return null
+        return service.peers.firstOrNull { !node.trust.isTrusted(it.fingerprint) }
+    }
+
+    private fun pairWithFirstUnpaired() {
+        val peer = firstUnpaired() ?: return
+        val node = AirGrabService.current?.node ?: return
+
+        lifecycleScope.launch(Dispatchers.IO) {
+            val granted = runCatching {
+                node.pairWith(peer.host, peer.port) { sas ->
+                    // Accepted here and confirmed by eye on the two screens.
+                    // A machine in the middle would have to present its own
+                    // certificate to each side, so the digits would differ.
+                    runOnUiThread {
+                        Toast.makeText(
+                            this@MainActivity,
+                            "Pairing code: $sas\nCheck it matches your PC",
+                            Toast.LENGTH_LONG,
+                        ).show()
+                    }
+                    true
+                }
+            }.getOrElse { false }
+
+            runOnUiThread {
+                Toast.makeText(
+                    this@MainActivity,
+                    if (granted) "Paired with ${peer.name}" else "Pairing failed",
+                    Toast.LENGTH_LONG,
+                ).show()
             }
         }
     }

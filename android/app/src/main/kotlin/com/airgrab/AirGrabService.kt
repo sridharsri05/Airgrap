@@ -14,6 +14,7 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.airgrab.core.DiscoveredPeer
 import com.airgrab.core.FileIdentity
+import com.airgrab.core.GestureEvent
 import com.airgrab.core.Node
 import com.airgrab.core.NodeConfig
 import java.io.File
@@ -83,6 +84,14 @@ class AirGrabService : Service() {
         private set
     private var discovery: NsdDiscovery? = null
 
+    var gestures: GestureOrchestrator? = null
+        private set
+
+    /** The last thing that happened, for the screen and the notification. */
+    @Volatile
+    var activity: String = "Ready"
+        private set
+
     /** Peers currently visible, for the UI to render. */
     val peers: List<DiscoveredPeer> get() = discovery?.peers().orEmpty()
 
@@ -138,16 +147,43 @@ class AirGrabService : Service() {
             node = started
             Log.i(TAG, "listening on ${started.port} as ${identity.fingerprint.take(16)}")
 
+            // Notification only. Whether the file was allowed at all was
+            // decided by the node, which refuses anything from a device that
+            // is not paired.
+            started.onIncomingFile = { file ->
+                activity = "Received ${file.name}"
+                updateStatus()
+            }
+
+            val orchestrator = GestureOrchestrator(
+                node = started,
+                scope = scope,
+                peerLookup = { fingerprint -> discovery?.peers()?.firstOrNull { it.fingerprint == fingerprint } },
+                onContentWanted = { PendingContent.current() },
+                onStatus = { text ->
+                    activity = text
+                    updateStatus()
+                },
+            )
+            orchestrator.start()
+            gestures = orchestrator
+
             val nsd = NsdDiscovery(
                 context = this,
                 fingerprint = identity.fingerprint,
                 displayName = deviceLabel(),
                 onFound = { peer ->
                     Log.i(TAG, "found ${peer.name} at ${peer.host}:${peer.port}")
+                    // Held open rather than dialled per gesture: the receiving
+                    // device has to already be listening when a release
+                    // happens, and a handshake would add its latency to an
+                    // interaction measured in tenths of a second.
+                    orchestrator.connectTo(peer)
                     updateStatus()
                     onPeersChanged?.invoke()
                 },
-                onLost = {
+                onLost = { fingerprint ->
+                    orchestrator.peerLost(fingerprint)
                     updateStatus()
                     onPeersChanged?.invoke()
                 },
@@ -170,11 +206,19 @@ class AirGrabService : Service() {
         val count = peers.size
         status = when {
             node == null -> "Starting"
+            // While something is happening, say what: a progress percentage is
+            // more use than the name of a device the user can already see.
+            activity != "Ready" -> activity
             count == 0 -> "Waiting for your PC"
             count == 1 -> "Connected to ${peers.first().name}"
             else -> "$count devices nearby"
         }
         notify(status)
+    }
+
+    /** A gesture from this device's camera, routed to the coordinator. */
+    fun onGesture(event: GestureEvent) {
+        gestures?.onLocalEvent(event)
     }
 
     override fun onDestroy() {
@@ -185,6 +229,7 @@ class AirGrabService : Service() {
         scope.cancel()
         node = null
         discovery = null
+        gestures = null
         current = null
         super.onDestroy()
     }
