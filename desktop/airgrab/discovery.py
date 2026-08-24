@@ -4,19 +4,30 @@ Devices advertise their fingerprint, name, platform and port; the fingerprint
 in the TXT record is a hint for the UI only. It is never trusted — identity is
 established by the signed-nonce exchange in auth.py once a connection opens,
 and pinned against the trust store before any file moves.
+
+This module is asyncio-native on purpose. python-zeroconf's synchronous API
+reuses the caller's running event loop, so calling it from inside a coroutine
+deadlocks with EventLoopBlocked. Since AirGrab's node is asyncio-based and
+advertising starts alongside it, the async API is the only correct choice
+here — the sync one fails exclusively at runtime, never in a unit test that
+happens to run outside a loop.
 """
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import socket
 from dataclasses import dataclass
 from typing import Callable
 
-from zeroconf import ServiceBrowser, ServiceInfo, ServiceListener, Zeroconf
+from zeroconf import ServiceStateChange
+from zeroconf.asyncio import AsyncServiceBrowser, AsyncServiceInfo, AsyncZeroconf
 
 from airgrab.protocol import PROTOCOL_VERSION
 
 SERVICE_TYPE = "_airgrab._tcp.local."
+RESOLVE_TIMEOUT_MS = 3000
 
 
 @dataclass(frozen=True)
@@ -29,9 +40,11 @@ class DiscoveredPeer:
 
 
 class Advertiser:
+    """Announces this device on the local network."""
+
     def __init__(self, fingerprint: str, name: str, platform: str, port: int) -> None:
-        self._zeroconf: Zeroconf | None = None
-        self._info = ServiceInfo(
+        self._aiozc: AsyncZeroconf | None = None
+        self._info = AsyncServiceInfo(
             SERVICE_TYPE,
             f"{fingerprint[:16]}.{SERVICE_TYPE}",
             addresses=[socket.inet_aton(_local_address())],
@@ -44,20 +57,22 @@ class Advertiser:
             },
         )
 
-    def start(self) -> None:
-        self._zeroconf = Zeroconf()
-        self._zeroconf.register_service(self._info)
+    async def start(self) -> None:
+        self._aiozc = AsyncZeroconf()
+        await self._aiozc.async_register_service(self._info)
 
-    def stop(self) -> None:
-        if self._zeroconf is not None:
-            try:
-                self._zeroconf.unregister_service(self._info)
-            finally:
-                self._zeroconf.close()
-                self._zeroconf = None
+    async def stop(self) -> None:
+        if self._aiozc is None:
+            return
+        with contextlib.suppress(Exception):
+            await self._aiozc.async_unregister_service(self._info)
+        await self._aiozc.async_close()
+        self._aiozc = None
 
 
-class Browser(ServiceListener):
+class Browser:
+    """Watches the local network for other AirGrab devices."""
+
     def __init__(
         self,
         on_found: Callable[[DiscoveredPeer], None],
@@ -68,26 +83,50 @@ class Browser(ServiceListener):
         self._on_lost = on_lost
         self._ignore = ignore_fingerprint
         self._peers: dict[str, DiscoveredPeer] = {}
-        self._zeroconf: Zeroconf | None = None
-        self._browser: ServiceBrowser | None = None
+        self._aiozc: AsyncZeroconf | None = None
+        self._browser: AsyncServiceBrowser | None = None
+        self._tasks: set[asyncio.Task] = set()
 
-    def start(self) -> None:
-        self._zeroconf = Zeroconf()
-        self._browser = ServiceBrowser(self._zeroconf, SERVICE_TYPE, self)
+    async def start(self) -> None:
+        self._aiozc = AsyncZeroconf()
+        self._browser = AsyncServiceBrowser(
+            self._aiozc.zeroconf, SERVICE_TYPE, handlers=[self._on_state_change]
+        )
 
-    def stop(self) -> None:
-        if self._zeroconf is not None:
-            self._zeroconf.close()
-            self._zeroconf = None
+    async def stop(self) -> None:
+        for task in list(self._tasks):
+            task.cancel()
+        self._tasks.clear()
+        if self._browser is not None:
+            with contextlib.suppress(Exception):
+                await self._browser.async_cancel()
             self._browser = None
+        if self._aiozc is not None:
+            await self._aiozc.async_close()
+            self._aiozc = None
 
     def peers(self) -> list[DiscoveredPeer]:
         return list(self._peers.values())
 
-    def add_service(self, zc: Zeroconf, type_: str, name: str) -> None:
-        info = zc.get_service_info(type_, name)
-        if info is None:
+    def _on_state_change(
+        self, zeroconf, service_type: str, name: str, state_change: ServiceStateChange
+    ) -> None:
+        if state_change is ServiceStateChange.Removed:
+            peer = self._peers.pop(name, None)
+            if peer is not None:
+                self._on_lost(peer.fingerprint)
             return
+
+        # Resolution needs a round trip, so it cannot happen in this callback.
+        task = asyncio.ensure_future(self._resolve(zeroconf, service_type, name))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    async def _resolve(self, zeroconf, service_type: str, name: str) -> None:
+        info = AsyncServiceInfo(service_type, name)
+        if not await info.async_request(zeroconf, RESOLVE_TIMEOUT_MS):
+            return
+
         props: dict[str, str] = {}
         for key, value in (info.properties or {}).items():
             if key is None or value is None:
@@ -99,6 +138,7 @@ class Browser(ServiceListener):
         fingerprint = props.get("id", "")
         if not fingerprint or fingerprint == self._ignore:
             return
+
         addresses = info.parsed_addresses()
         if not addresses:
             return
@@ -110,16 +150,10 @@ class Browser(ServiceListener):
             host=addresses[0],
             port=info.port or 0,
         )
+        if self._peers.get(name) == peer:
+            return
         self._peers[name] = peer
         self._on_found(peer)
-
-    def update_service(self, zc: Zeroconf, type_: str, name: str) -> None:
-        self.add_service(zc, type_, name)
-
-    def remove_service(self, zc: Zeroconf, type_: str, name: str) -> None:
-        peer = self._peers.pop(name, None)
-        if peer is not None:
-            self._on_lost(peer.fingerprint)
 
 
 def _local_address() -> str:

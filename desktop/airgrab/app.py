@@ -73,21 +73,33 @@ class AirGrabApp:
             "windows",
             self._node.port,
         )
-        self._advertiser.start()
+        await self._advertiser.start()
 
         self._browser = Browser(
             on_found=self._on_peer_found,
             on_lost=self._on_peer_lost,
             ignore_fingerprint=self._node.identity.fingerprint,
         )
-        self._browser.start()
+        await self._browser.start()
+
+    async def _stop_services(self) -> None:
+        if self._browser is not None:
+            await self._browser.stop()
+            self._browser = None
+        if self._advertiser is not None:
+            await self._advertiser.stop()
+            self._advertiser = None
+        await self._node.stop()
 
     def stop(self) -> None:
-        if self._browser is not None:
-            self._browser.stop()
-        if self._advertiser is not None:
-            self._advertiser.stop()
-        asyncio.run_coroutine_threadsafe(self._node.stop(), self._loop)
+        # Called from the tray thread, so shutdown has to be marshalled onto
+        # the asyncio thread rather than awaited here.
+        future = asyncio.run_coroutine_threadsafe(self._stop_services(), self._loop)
+        try:
+            future.result(timeout=10)
+        except Exception:
+            pass
+        self._loop.call_soon_threadsafe(self._loop.stop)
         self._tray.stop()
 
     # ---------------------------------------------------------------- events
