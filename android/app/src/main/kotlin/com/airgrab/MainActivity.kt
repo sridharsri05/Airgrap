@@ -20,9 +20,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.airgrab.core.DiscoveredPeer
-import com.airgrab.core.GestureEvent
 import com.airgrab.core.GestureState
-import com.airgrab.core.GrabStateMachine
 import com.airgrab.core.Pose
 import com.airgrab.ui.Style
 import kotlinx.coroutines.Dispatchers
@@ -53,17 +51,11 @@ class MainActivity : AppCompatActivity() {
     private lateinit var warningCard: LinearLayout
     private lateinit var warningText: TextView
 
+    private lateinit var overlayCard: LinearLayout
+
     private lateinit var diagnosticsText: TextView
     private lateinit var diagnosticsToggle: Button
     private var diagnosticsOpen = false
-
-    private var detector: HandPoseDetector? = null
-    private var camera: GestureCamera? = null
-    private val stateMachine = GrabStateMachine()
-
-    @Volatile
-    private var livePose: Pose = Pose.NONE
-    private val recentEvents = ArrayDeque<String>()
 
     /** Peers already offered a pairing dialog, so it is not reopened each tick. */
     private val pairingInFlight = mutableSetOf<String>()
@@ -79,19 +71,11 @@ class MainActivity : AppCompatActivity() {
      */
     private val requestPermissions = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { results ->
-        if (results[Manifest.permission.POST_NOTIFICATIONS] == false) {
-            Toast.makeText(
-                this, "AirGrab needs its notification to keep running", Toast.LENGTH_LONG
-            ).show()
-        }
-        // Started regardless: without the notification Android may stop the
-        // service later, but refusing to start at all helps nobody.
+    ) { _ ->
+        // Started after the answer either way. The service checks the camera
+        // permission itself, and without the notification permission Android
+        // may stop it later — but refusing to start at all helps nobody.
         AirGrabService.start(this)
-
-        // Refusing the camera is legitimate — receiving still works — so the
-        // app says so in the status line rather than nagging.
-        if (results[Manifest.permission.CAMERA] == true) startGestureCamera()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -113,7 +97,6 @@ class MainActivity : AppCompatActivity() {
 
         if (missing.isEmpty()) {
             AirGrabService.start(this)
-            startGestureCamera()
         } else {
             requestPermissions.launch(missing.toTypedArray())
         }
@@ -130,14 +113,25 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         refreshWarning()
+        // Checked on every resume: the user grants this in Settings and comes
+        // back, so there is no result to listen for.
+        overlayCard.visibility =
+            if (GestureOverlay.permitted(this)) View.GONE else View.VISIBLE
     }
 
-    override fun onDestroy() {
-        camera?.stop()
-        detector?.close()
-        camera = null
-        detector = null
-        super.onDestroy()
+    private fun requestOverlayPermission() {
+        runCatching {
+            startActivity(
+                Intent(
+                    android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    Uri.parse("package:$packageName"),
+                )
+            )
+        }.onFailure {
+            Toast.makeText(
+                this, "Allow AirGrab to display over other apps in Settings", Toast.LENGTH_LONG
+            ).show()
+        }
     }
 
     // ------------------------------------------------------------------ views
@@ -190,6 +184,21 @@ class MainActivity : AppCompatActivity() {
             addView(fixButton)
         }
 
+        overlayCard = Style.card(this).apply {
+            visibility = View.GONE
+            addView(Style.title(this@MainActivity, "ON-SCREEN FEEDBACK"))
+            addView(Style.spacer(this@MainActivity, 8))
+            addView(
+                Style.body(
+                    this@MainActivity,
+                    "Show what a gesture did on top of whatever you are using, " +
+                        "so you know it worked without opening AirGrab.",
+                )
+            )
+            addView(Style.spacer(this@MainActivity, 12))
+            addView(plainButton("Allow") { requestOverlayPermission() })
+        }
+
         diagnosticsText = Style.mono(this, "").apply { visibility = View.GONE }
         diagnosticsToggle = plainButton("Show details") { toggleDiagnostics() }
         val diagnosticsCard = Style.card(this).apply {
@@ -209,6 +218,7 @@ class MainActivity : AppCompatActivity() {
             addView(stateCard)
             addView(contentCard)
             addView(devicesCard)
+            addView(overlayCard)
             addView(warningCard)
             addView(diagnosticsCard)
             addView(stopButton)
@@ -266,7 +276,7 @@ class MainActivity : AppCompatActivity() {
                 stateDetail.text = "Setting up the link."
             }
 
-            stateMachine.state == GestureState.HOLDING -> {
+            service.stateMachine.state == GestureState.HOLDING -> {
                 stateDot.setBackgroundColourOf(Style.accent(this))
                 stateHeadline.text = "Holding"
                 stateDetail.text = "Open your palm at the other device to drop it."
@@ -342,10 +352,10 @@ class MainActivity : AppCompatActivity() {
     private fun renderDiagnostics(service: AirGrabService?, node: com.airgrab.core.Node?) {
         if (!diagnosticsOpen) return
 
-        val (seen, classified) = camera?.stats() ?: (0L to 0L)
+        val (seen, classified) = service?.cameraStats() ?: (0L to 0L)
         diagnosticsText.text = buildString {
-            appendLine("hand      $livePose")
-            appendLine("gesture   ${stateMachine.state}")
+            appendLine("hand      ${service?.livePose ?: Pose.NONE}")
+            appendLine("gesture   ${service?.stateMachine?.state}")
             appendLine("frames    $classified of $seen")
             appendLine("port      ${node?.port ?: "-"}")
             appendLine("identity  ${node?.identity?.fingerprint?.take(16) ?: "-"}")
@@ -358,7 +368,7 @@ class MainActivity : AppCompatActivity() {
                 trusted.forEach { appendLine("  ${it.name} (${it.platform})") }
             }
 
-            val events = synchronized(recentEvents) { recentEvents.toList() }
+            val events = service?.recentEvents?.let { synchronized(it) { it.toList() } }.orEmpty()
             if (events.isNotEmpty()) {
                 appendLine()
                 appendLine("recent")
@@ -391,37 +401,6 @@ class MainActivity : AppCompatActivity() {
             if (held == null) "Could not read that file" else "Ready to send ${held.name}",
             Toast.LENGTH_LONG,
         ).show()
-    }
-
-    // ----------------------------------------------------------------- camera
-
-    private fun startGestureCamera() {
-        val loaded = HandPoseDetector.create(this)
-        if (loaded == null) {
-            Toast.makeText(this, "Gesture recognition unavailable", Toast.LENGTH_LONG).show()
-            return
-        }
-        detector = loaded
-
-        camera = GestureCamera(
-            context = this,
-            detector = loaded,
-            stateMachine = stateMachine,
-            onEvent = { event ->
-                record(event)
-                // The service owns the coordinator, because a gesture has to
-                // work when this screen is not on top.
-                AirGrabService.current?.onGesture(event)
-            },
-            onPose = { livePose = it },
-        ).also { it.start(this, front = true) }
-    }
-
-    private fun record(event: GestureEvent) {
-        synchronized(recentEvents) {
-            recentEvents.addFirst("${event.type} ${event.fromState} -> ${event.toState}")
-            while (recentEvents.size > 6) recentEvents.removeLast()
-        }
     }
 
     // ---------------------------------------------------------------- pairing

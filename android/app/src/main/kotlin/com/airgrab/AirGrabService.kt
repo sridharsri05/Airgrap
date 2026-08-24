@@ -4,19 +4,23 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
-import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.LifecycleService
 import com.airgrab.core.DiscoveredPeer
 import com.airgrab.core.FileIdentity
 import com.airgrab.core.GestureEvent
+import com.airgrab.core.GrabStateMachine
 import com.airgrab.core.Node
 import com.airgrab.core.NodeConfig
+import com.airgrab.core.Pose
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CoroutineScope
@@ -52,7 +56,7 @@ import kotlinx.coroutines.runBlocking
  * something code can defeat; it needs the user to allow background activity
  * once, which [BatteryPolicy] exists to ask for.
  */
-class AirGrabService : Service() {
+class AirGrabService : LifecycleService() {
 
     companion object {
         const val TAG = "AirGrabService"
@@ -88,6 +92,30 @@ class AirGrabService : Service() {
     var gestures: GestureOrchestrator? = null
         private set
 
+    /**
+     * The camera lives here, not in the activity.
+     *
+     * A gesture is made when the user is looking at something else entirely —
+     * their gallery, another app, or nothing at all. Binding the camera to an
+     * activity meant it stopped the moment the screen dimmed, so the feature
+     * worked only while the user was staring at the app that exists to be
+     * ignored.
+     */
+    private var detector: HandPoseDetector? = null
+    private var camera: GestureCamera? = null
+    private val overlay by lazy { GestureOverlay(this) }
+    val stateMachine = GrabStateMachine()
+
+    @Volatile
+    var livePose: Pose = Pose.NONE
+        private set
+
+    /** Frames captured and frames classified, for the diagnostics panel. */
+    fun cameraStats(): Pair<Long, Long> = camera?.stats() ?: (0L to 0L)
+
+    /** The most recent gesture events, newest first. */
+    val recentEvents = ArrayDeque<String>()
+
     /** The last thing that happened, for the screen and the notification. */
     @Volatile
     var activity: String = "Ready"
@@ -112,7 +140,10 @@ class AirGrabService : Service() {
      */
     private val starting = AtomicBoolean(false)
 
-    override fun onBind(intent: Intent?): IBinder? = null
+    override fun onBind(intent: Intent): IBinder? {
+        super.onBind(intent)
+        return null
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -121,6 +152,7 @@ class AirGrabService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        super.onStartCommand(intent, flags, startId)
         if (intent?.action == ACTION_STOP) {
             stopSelf()
             return START_NOT_STICKY
@@ -132,7 +164,10 @@ class AirGrabService : Service() {
         startForeground(
             NOTIFICATION_ID,
             buildNotification("Starting"),
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
+            // Both types: the link and the camera are equally the point, and
+            // declaring only one would have Android stop the other.
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA,
         )
 
         if (starting.compareAndSet(false, true)) scope.launch { bringUp() }
@@ -164,6 +199,8 @@ class AirGrabService : Service() {
             // is not paired.
             started.onIncomingFile = { file ->
                 activity = "Received ${file.name}"
+                Haptics.received(this)
+                overlay.show(GestureOverlay.Kind.RECEIVED, file.name)
                 updateStatus()
             }
 
@@ -174,6 +211,28 @@ class AirGrabService : Service() {
                 onContentWanted = { PendingContent.current() },
                 onStatus = { text ->
                     activity = text
+                    // The one outcome the user most needs to feel: the file
+                    // actually left. A grab that picked nothing up is worth
+                    // knowing about immediately too.
+                    when {
+                        text.startsWith("Sent ") -> {
+                            Haptics.sent(this)
+                            overlay.show(
+                                GestureOverlay.Kind.SENT, text.removePrefix("Sent ")
+                            )
+                        }
+                        text.startsWith("Send failed") -> {
+                            Haptics.cancelled(this)
+                            overlay.show(GestureOverlay.Kind.CANCELLED, "Send failed")
+                        }
+                        text.startsWith("Nothing to send") -> {
+                            Haptics.cancelled(this)
+                            overlay.show(
+                                GestureOverlay.Kind.CANCELLED, "Share a file to AirGrab first"
+                            )
+                        }
+                        else -> Unit
+                    }
                     updateStatus()
                 },
             )
@@ -204,6 +263,7 @@ class AirGrabService : Service() {
             nsd.startBrowsing()
             discovery = nsd
 
+            startCamera(orchestrator)
             updateStatus()
         } catch (exc: Throwable) {
             // Reported in the notification rather than swallowed. A service
@@ -232,12 +292,64 @@ class AirGrabService : Service() {
         notify(status)
     }
 
-    /** A gesture from this device's camera, routed to the coordinator. */
-    fun onGesture(event: GestureEvent) {
-        gestures?.onLocalEvent(event)
+    /**
+     * Start watching for gestures, if the user allowed the camera.
+     *
+     * Refusing is a legitimate choice: everything except making a gesture on
+     * THIS device still works, including receiving files.
+     */
+    private fun startCamera(orchestrator: GestureOrchestrator) {
+        if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.CAMERA)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            Log.i(TAG, "no camera permission; gestures disabled on this device")
+            return
+        }
+
+        val loaded = HandPoseDetector.create(this)
+        if (loaded == null) {
+            Log.e(TAG, "gesture model unavailable")
+            return
+        }
+        detector = loaded
+
+        camera = GestureCamera(
+            context = this,
+            detector = loaded,
+            stateMachine = stateMachine,
+            onEvent = { event ->
+                synchronized(recentEvents) {
+                    recentEvents.addFirst("${event.type} ${event.fromState} -> ${event.toState}")
+                    while (recentEvents.size > 6) recentEvents.removeLast()
+                }
+                // Felt, not shown. At this moment the phone is face down or in
+                // a pocket and the screen tells the user nothing.
+                when (event.type) {
+                    com.airgrab.core.GestureEventType.GRABBED -> {
+                        Haptics.grabbed(this)
+                        overlay.show(
+                            GestureOverlay.Kind.HOLDING,
+                            PendingContent.current()?.name ?: "",
+                        )
+                    }
+                    com.airgrab.core.GestureEventType.CANCELLED -> {
+                        Haptics.cancelled(this)
+                        overlay.show(GestureOverlay.Kind.CANCELLED, "Let go")
+                    }
+                    else -> Unit
+                }
+                orchestrator.onLocalEvent(event)
+            },
+            onPose = { livePose = it },
+        ).also { it.start(this) }
     }
 
     override fun onDestroy() {
+        runCatching { overlay.hideNow() }
+        runCatching { camera?.stop() }
+        runCatching { detector?.close() }
+        camera = null
+        detector = null
         runCatching { discovery?.stop() }
         // Blocking on purpose: onDestroy does not wait for coroutines, and a
         // node left listening would hold the port against the next start.

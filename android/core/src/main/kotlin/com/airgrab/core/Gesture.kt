@@ -42,7 +42,16 @@ data class GestureConfig(
     val disarmMillis: Long = 270,
     /** A pose must be seen at least this many times however long it lasted. */
     val minFrames: Int = 2,
-    val holdTimeoutMillis: Long = 20_000,
+    /**
+     * How long a grab survives with no hand in view.
+     *
+     * This is the walk from one device to the other. Twenty seconds sounded
+     * ample and was not: on a real attempt it expired while the user was
+     * still turning the phone away and crossing the room, and the grab
+     * silently became a cancel. A minute costs nothing — an uncaught hold
+     * still expires, just not while the user is mid-stride.
+     */
+    val holdTimeoutMillis: Long = 60_000,
 )
 
 /** Monotonic milliseconds. Injectable so tests need no real clock. */

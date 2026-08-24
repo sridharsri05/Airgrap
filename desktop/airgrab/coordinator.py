@@ -79,7 +79,7 @@ class GestureCoordinator:
     def __init__(
         self,
         clock: Callable[[], float] = time.monotonic,
-        hold_window_seconds: float = 20.0,
+        hold_window_seconds: float = 60.0,
     ) -> None:
         self._clock = clock
         self._hold_window = hold_window_seconds

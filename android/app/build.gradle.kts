@@ -134,6 +134,10 @@ dependencies {
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
+    // A Service is not a LifecycleOwner, and CameraX binds to one. This
+    // supplies the lifecycle so the camera can live in the service rather
+    // than in the activity.
+    implementation("androidx.lifecycle:lifecycle-service:2.8.7")
 
     // CameraX rather than Camera2 directly. Camera2 would mean handling
     // device-specific orientation, buffer formats and lifecycle by hand on

@@ -15,6 +15,15 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
 
+    <!-- The gesture is made while looking somewhere else, so the only
+         feedback that reaches the user is one they can feel. -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+
+    <!-- Draws the gesture indicator over whatever the user is actually
+         looking at. Optional: without it the feedback is the vibration
+         alone, and everything still works. -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
@@ -59,11 +68,17 @@
 
         <!-- connectedDevice, not dataSync: a dataSync service is capped at six
              hours per twenty-four since Android 15, so the phone would become
-             undiscoverable roughly once a day with nothing to explain it. -->
+             undiscoverable roughly once a day with nothing to explain it.
+
+             camera as well, because the gesture is the whole interface and
+             the user is never looking at this app when they make it. Android
+             forbids background camera access outright, and permits it only to
+             a foreground service of this type started while the app was
+             visible — which is exactly the shape of this feature. -->
         <service
             android:name=".AirGrabService"
             android:exported="false"
-            android:foregroundServiceType="connectedDevice" />
+            android:foregroundServiceType="connectedDevice|camera" />
 
         <!-- Restarts the link after a reboot. Without this the user has to
              remember to open the app before their PC can see the phone. -->

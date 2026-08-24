@@ -57,10 +57,19 @@ object PendingContent {
             return null
         }
 
+        // Released BEFORE the copy, never after.
+        //
+        // clear() deletes whatever is pending, and re-sharing the same file
+        // resolves to the same path — so clearing afterwards deleted the copy
+        // that had just been written. The symptom was a share that worked the
+        // first time and produced a zero-byte file every time after.
+        pending.set(null)
+
         val directory = File(context.cacheDir, "outgoing").apply {
             mkdirs()
             // Only one item is ever pending, so anything else here is left
-            // over from a share the user never completed.
+            // over from a share the user never completed. This is also what
+            // reclaims the space the previous share used.
             listFiles()?.forEach { it.delete() }
         }
 
@@ -70,7 +79,16 @@ object PendingContent {
                 if (input == null) return null
                 destination.outputStream().use { output -> input.copyTo(output) }
             }
-            clear()
+
+            // A zero-byte result means the provider gave us nothing readable.
+            // Holding it would fail later as a transfer of an empty file,
+            // which looks like a network problem rather than a share problem.
+            if (destination.length() == 0L && (size ?: 0L) > 0L) {
+                Log.e(TAG, "copy of $name produced no bytes")
+                destination.delete()
+                return null
+            }
+
             pending.set(destination)
             Log.i(TAG, "holding ${destination.name} (${destination.length()} bytes)")
             destination

@@ -41,7 +41,7 @@ sealed interface Action {
 
 class GestureCoordinator(
     private val clock: Clock = Clock { System.nanoTime() / 1_000_000 },
-    private val holdWindowMillis: Long = 20_000,
+    private val holdWindowMillis: Long = 60_000,
 ) {
     var holding: Boolean = false
         private set

@@ -80,7 +80,11 @@ class GestureConfig:
     catch_seconds: float = 0.13
     disarm_seconds: float = 0.27
     min_frames: int = 2
-    hold_timeout_seconds: float = 20.0
+    # How long a grab survives with no hand in view: the walk from one
+    # device to the other. Twenty seconds sounded ample and was not — on a
+    # real attempt it expired mid-stride and the grab silently became a
+    # cancel.
+    hold_timeout_seconds: float = 60.0
 
 
 class GrabStateMachine:
