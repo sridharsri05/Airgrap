@@ -266,7 +266,10 @@ class AirGrabService : Service() {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("AirGrab")
             .setContentText(text)
-            .setSmallIcon(android.R.drawable.stat_sys_upload)
+            // A silhouette, not the launcher icon: Android draws notification
+            // icons as a flat mask, so anything with colour or a filled
+            // background arrives as a white blob.
+            .setSmallIcon(R.drawable.ic_notification)
             .setContentIntent(open)
             // An always-present notification the user cannot dismiss should
             // always offer a way out.
