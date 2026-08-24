@@ -34,7 +34,7 @@ launches and listens on 0.0.0.0:53421.
 | Background service | done |
 | Camera + hand tracking | done |
 | Gesture-to-transfer wiring | done |
-| Screen | status screen only |
+| Screen | done |
 
 Verified on loopback: two nodes with real certificates paired, showed the
 same six digits on both sides, and transferred 700,000 bytes with a matching
