@@ -132,6 +132,21 @@ class AirGrabApp:
         await self._session.close()
         await self._node.stop()
 
+        # zeroconf schedules its goodbye broadcasts as background tasks that
+        # async_close() does not await, so stopping the loop immediately
+        # destroys them mid-flight. Give them a moment, then cancel whatever
+        # is still outstanding rather than leaving it to be torn down.
+        await asyncio.sleep(0.5)
+        pending = [
+            task
+            for task in asyncio.all_tasks()
+            if task is not asyncio.current_task() and not task.done()
+        ]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
     def stop(self) -> None:
         # Called from the tray thread, so shutdown is marshalled onto the
         # asyncio thread rather than awaited here.
