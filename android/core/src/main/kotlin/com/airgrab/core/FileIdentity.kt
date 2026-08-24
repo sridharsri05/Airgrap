@@ -33,12 +33,12 @@ import javax.security.auth.x500.X500Principal
  * readable only by this application, and on Windows is restricted to the
  * owner. That is the same protection the desktop's key already has.
  *
- * ## Why the key is generated here rather than by Ktor's helper
+ * ## Why the low-level builder rather than Ktor's convenience helper
  *
- * `generateCertificate` defaults to RSA and gives no way to request a curve.
+ * `generateCertificate` defaults to RSA and offers no way to request a curve.
  * The protocol is fixed to P-256 with SHA256withECDSA, matching
- * `desktop/airgrab/identity.py`, so the keypair is generated directly and only
- * the certificate is delegated.
+ * `desktop/airgrab/identity.py`, so the certificate is built through
+ * `buildKeyStore`, where the curve can be stated explicitly.
  */
 class FileIdentity private constructor(
     override val displayName: String,
@@ -46,8 +46,19 @@ class FileIdentity private constructor(
     private val privateKey: PrivateKey,
     val keyStore: KeyStore,
     val keyAlias: String,
-    val keyStorePassword: CharArray,
 ) : DeviceIdentity {
+
+    /**
+     * A FRESH array on every read, never the shared one.
+     *
+     * Ktor's TLS setup zeroes the password array once it has used it, which is
+     * ordinary hygiene for key material and completely correct on its own.
+     * Handing out the same array twice therefore breaks the second caller:
+     * the first server starts, wipes it, and every later use sees a string of
+     * null characters. The JDK reports that as "Password is not ASCII", which
+     * points nowhere near the real cause.
+     */
+    val keyStorePassword: CharArray get() = PASSWORD.copyOf()
 
     override val certDer: ByteArray = certificate.encoded
 
@@ -76,8 +87,13 @@ class FileIdentity private constructor(
          * access could not already defeat. It is fixed rather than random
          * because a lost random password would mean a lost identity, and with
          * it every device pairing the user has made.
+         *
+         * Never passed to anything directly: see [keyStorePassword]. Callers
+         * that zero their copy are the reason it exists as a template.
          */
-        private val PASSWORD = "airgrab".toCharArray()
+        private const val PASSWORD_TEXT = "airgrab"
+
+        private val PASSWORD: CharArray get() = PASSWORD_TEXT.toCharArray()
 
         fun loadOrCreate(dataDir: File, displayName: String): FileIdentity {
             dataDir.mkdirs()
@@ -98,7 +114,7 @@ class FileIdentity private constructor(
 
             val certificate = store.getCertificate(ALIAS) as X509Certificate
             val privateKey = store.getKey(ALIAS, PASSWORD) as PrivateKey
-            return FileIdentity(displayName, certificate, privateKey, store, ALIAS, PASSWORD)
+            return FileIdentity(displayName, certificate, privateKey, store, ALIAS)
         }
 
         private fun load(file: File): KeyStore =
@@ -112,7 +128,7 @@ class FileIdentity private constructor(
         private fun create(file: File): KeyStore {
             val generated = buildKeyStore {
                 certificate(ALIAS) {
-                    password = String(PASSWORD)
+                    password = PASSWORD_TEXT
                     // P-256 with SHA-256, matching desktop/airgrab/identity.py.
                     // The default is RSA, which would handshake and sign
                     // perfectly well and fail only when the desktop tried to
