@@ -24,6 +24,7 @@ from airgrab.discovery import Advertiser, Browser, DiscoveredPeer
 from airgrab.gesture import EventType, GestureEvent
 from airgrab.node import Node, NodeConfig
 from airgrab.session import GestureSession
+from airgrab.ui.overlay import Overlay
 from airgrab.ui.tray import Tray
 from airgrab.windows import ensure_firewall_rule
 
@@ -33,6 +34,10 @@ class AirGrabApp:
         self._data_dir = default_data_dir()
         self._settings = load_settings(self._data_dir / "settings.json")
         self._peers: dict[str, DiscoveredPeer] = {}
+        # The tray balloon is easy to miss and can be suppressed by focus
+        # assist without saying so. This is the same indicator the phone
+        # shows, in the same colours.
+        self._overlay = Overlay()
         self._loop = asyncio.new_event_loop()
 
         self._node = Node(
@@ -66,6 +71,10 @@ class AirGrabApp:
     # ------------------------------------------------------------- lifecycle
 
     def run(self) -> None:
+        # Started before the tray takes the main thread. The overlay owns a
+        # thread of its own because every Tk call has to happen on one thread,
+        # and pystray already owns this one.
+        self._overlay.start()
         threading.Thread(target=self._run_loop, daemon=True).start()
         self._tray.run()
 
@@ -154,6 +163,7 @@ class AirGrabApp:
         if self._camera is not None:
             self._camera.stop()
             self._camera = None
+        self._overlay.stop()
         future = asyncio.run_coroutine_threadsafe(self._stop_services(), self._loop)
         try:
             future.result(timeout=10)
@@ -207,11 +217,14 @@ class AirGrabApp:
         elif event.type is EventType.GRABBED:
             self._tray.set_status("Holding — open your hand at the other device",
                                   "connected")
+            self._overlay.show("holding", "Holding — open your hand at the other device")
         elif event.type is EventType.CATCH_READY:
             self._tray.set_status("Incoming — open your hand to receive", "connected")
+            self._overlay.show("holding", "Open your hand to receive")
         elif event.type is EventType.CANCELLED:
             self._tray.set_status("Grab expired", "idle")
             self._tray.notify("Grab expired — nothing was sent.")
+            self._overlay.show("cancelled", "Grab expired — nothing was sent")
         elif event.type is EventType.DISARMED:
             self._tray.set_status("Ready", "connected" if self._peers else "idle")
 
@@ -221,9 +234,11 @@ class AirGrabApp:
         if ok:
             self._tray.notify(f"Sent to {name}")
             self._tray.set_status(f"Ready — connected to {name}", "connected")
+            self._overlay.show("sent", f"Sent to {name}")
         else:
             self._tray.notify(f"Could not send to {name}")
             self._tray.set_status("Send failed", "problem")
+            self._overlay.show("cancelled", f"Could not send to {name}")
 
     def _on_camera_stopped(self, reason: str) -> None:
         self._camera_ready = False
@@ -233,6 +248,7 @@ class AirGrabApp:
 
     def _on_file_received(self, path: Path) -> None:
         self._tray.notify(f"Received {path.name}")
+        self._overlay.show("received", f"Received {path.name}")
 
     # ---------------------------------------------------------- user actions
 
