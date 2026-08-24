@@ -32,7 +32,8 @@ launches and listens on 0.0.0.0:53421.
 | Connection layer (control channel + transfer endpoint) | done |
 | Finding the PC on Wi-Fi | done |
 | Background service | done |
-| Camera + hand tracking | next |
+| Camera + hand tracking | done |
+| Gesture-to-transfer wiring | next |
 | Screen | status screen only |
 
 Verified on loopback: two nodes with real certificates paired, showed the

@@ -14,6 +14,9 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
+import com.airgrab.core.GestureEvent
+import com.airgrab.core.GrabStateMachine
+import com.airgrab.core.Pose
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -33,8 +36,29 @@ import kotlinx.coroutines.launch
 class MainActivity : AppCompatActivity() {
 
     private lateinit var status: TextView
+    private lateinit var gesture: TextView
     private lateinit var warning: TextView
     private lateinit var fixButton: Button
+
+    private var detector: HandPoseDetector? = null
+    private var camera: GestureCamera? = null
+    private val stateMachine = GrabStateMachine()
+
+    @Volatile
+    private var livePose: Pose = Pose.NONE
+    private val recentEvents = ArrayDeque<String>()
+
+    private val requestCamera = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            startGestureCamera()
+        } else {
+            // Refused is a legitimate choice: everything except the gesture
+            // itself still works, and the app should say so rather than nag.
+            gesture.text = "Camera not allowed.\nTransfers still work from the PC."
+        }
+    }
 
     private val requestNotifications = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -61,6 +85,22 @@ class MainActivity : AppCompatActivity() {
         }
 
         watchStatus()
+
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
+            == PackageManager.PERMISSION_GRANTED
+        ) {
+            startGestureCamera()
+        } else {
+            requestCamera.launch(Manifest.permission.CAMERA)
+        }
+    }
+
+    override fun onDestroy() {
+        camera?.stop()
+        detector?.close()
+        camera = null
+        detector = null
+        super.onDestroy()
     }
 
     override fun onResume() {
@@ -76,6 +116,13 @@ class MainActivity : AppCompatActivity() {
         val heading = TextView(this).apply {
             text = "AirGrab"
             textSize = 28f
+        }
+
+        gesture = TextView(this).apply {
+            textSize = 15f
+            setPadding(0, padding, 0, 0)
+            typeface = android.graphics.Typeface.MONOSPACE
+            text = "Camera starting..."
         }
 
         status = TextView(this).apply {
@@ -110,6 +157,7 @@ class MainActivity : AppCompatActivity() {
             gravity = Gravity.START
             setPadding(padding, padding * 2, padding, padding)
             addView(heading)
+            addView(gesture)
             addView(status)
             addView(warning)
             addView(fixButton)
@@ -125,7 +173,8 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch(Dispatchers.Main) {
             while (true) {
                 status.text = describe()
-                delay(1000)
+                gesture.text = describeGesture()
+                delay(250)
             }
         }
     }
@@ -163,6 +212,51 @@ class MainActivity : AppCompatActivity() {
                 appendLine()
                 appendLine("Paired devices:")
                 trusted.forEach { appendLine("  ${it.name} (${it.platform})") }
+            }
+        }
+    }
+
+    // --------------------------------------------------------------- camera
+
+    private fun startGestureCamera() {
+        val loaded = HandPoseDetector.create(this)
+        if (loaded == null) {
+            gesture.text = "Gesture model failed to load."
+            return
+        }
+        detector = loaded
+
+        camera = GestureCamera(
+            context = this,
+            detector = loaded,
+            stateMachine = stateMachine,
+            onEvent = { event -> recordEvent(event) },
+            onPose = { pose -> livePose = pose },
+        ).also { it.start(this, front = true) }
+    }
+
+    private fun recordEvent(event: GestureEvent) {
+        synchronized(recentEvents) {
+            recentEvents.addFirst("${event.type} (${event.fromState} -> ${event.toState})")
+            // A short window: the point is to see what just happened, not to
+            // keep a log.
+            while (recentEvents.size > 5) recentEvents.removeLast()
+        }
+    }
+
+    private fun describeGesture(): String {
+        val loaded = camera ?: return "Camera not running."
+        val (seen, classified) = loaded.stats()
+
+        return buildString {
+            appendLine("Hand: ${livePose}")
+            appendLine("State: ${stateMachine.state}")
+            appendLine("Frames: $classified of $seen")
+            val events = synchronized(recentEvents) { recentEvents.toList() }
+            if (events.isNotEmpty()) {
+                appendLine()
+                appendLine("Recent:")
+                events.forEach { appendLine("  $it") }
             }
         }
     }
