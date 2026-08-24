@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import os
+import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -50,14 +53,15 @@ class DeviceIdentity:
     @classmethod
     def load_or_create(cls, directory: Path, display_name: str) -> "DeviceIdentity":
         directory = Path(directory)
-        directory.mkdir(parents=True, exist_ok=True)
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        _restrict_to_owner(directory)
         cert_path = directory / CERT_FILENAME
         key_path = directory / KEY_FILENAME
 
         if not (cert_path.exists() and key_path.exists()):
             cert_pem, key_pem = _generate(display_name)
-            key_path.write_bytes(key_pem)
-            cert_path.write_bytes(cert_pem)
+            _write_private(key_path, key_pem)
+            cert_path.write_bytes(cert_pem)  # public; no restriction needed
 
         cert_pem = cert_path.read_bytes()
         key_pem = key_path.read_bytes()
@@ -77,6 +81,51 @@ class DeviceIdentity:
     def sign(self, data: bytes) -> bytes:
         key = serialization.load_pem_private_key(self.key_pem, password=None)
         return key.sign(data, ec.ECDSA(hashes.SHA256()))
+
+
+def _write_private(path: Path, data: bytes) -> None:
+    """Write secret material readable only by its owner.
+
+    The file is created with restrictive permissions rather than created and
+    then tightened, so there is no window in which the private key is
+    world-readable.
+    """
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(data)
+    _restrict_to_owner(path)
+
+
+def _restrict_to_owner(path: Path) -> None:
+    """Best-effort owner-only access control.
+
+    POSIX mode bits are advisory on Windows, where access is governed by ACLs
+    instead. `icacls` is therefore used to strip inherited permissions and
+    grant only the current user. Failure is non-fatal: the data directory
+    already sits under the per-user LOCALAPPDATA tree, so this hardens a
+    location that is not world-readable to begin with.
+    """
+    try:
+        os.chmod(path, 0o700 if path.is_dir() else 0o600)
+    except OSError:
+        pass
+
+    if sys.platform != "win32":
+        return
+
+    user = os.environ.get("USERNAME")
+    if not user:
+        return
+    try:
+        subprocess.run(
+            ["icacls", str(path), "/inheritance:r", "/grant:r", f"{user}:(F)"],
+            capture_output=True,
+            check=False,
+            creationflags=0x08000000,  # CREATE_NO_WINDOW
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        pass
 
 
 def _generate(display_name: str) -> tuple[bytes, bytes]:

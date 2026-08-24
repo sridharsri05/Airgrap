@@ -1,6 +1,23 @@
+import stat
+import sys
 from pathlib import Path
 
+import pytest
+
 from airgrab.identity import DeviceIdentity, fingerprint_of, verify_signature
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX mode bits are advisory on Windows")
+def test_private_key_is_not_readable_by_others(tmp_path: Path):
+    ident = DeviceIdentity.load_or_create(tmp_path / "d", "TEST-PC")
+    mode = ident.key_path.stat().st_mode
+    assert mode & (stat.S_IRWXG | stat.S_IRWXO) == 0
+
+
+def test_private_key_file_exists_and_is_a_regular_file(tmp_path: Path):
+    ident = DeviceIdentity.load_or_create(tmp_path / "d", "TEST-PC")
+    assert ident.key_path.is_file()
+    assert b"PRIVATE KEY" in ident.key_path.read_bytes()
 
 
 def test_fingerprint_is_64_hex_chars(tmp_path: Path):
