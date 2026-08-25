@@ -3,15 +3,18 @@ package com.airgrab
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.Outline
 import android.graphics.drawable.GradientDrawable
-import android.widget.HorizontalScrollView
-import android.widget.ImageView
 import android.net.Uri
 import android.os.Bundle
 import android.view.View
-import android.view.WindowManager
 import android.view.ViewGroup
+import android.view.ViewOutlineProvider
+import android.view.WindowManager
 import android.widget.Button
+import android.widget.HorizontalScrollView
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -29,6 +32,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
+/** What the picker says when it has photos to show. */
+private const val PICK_HINT =
+    "Make a fist to send this. Tap another photo to choose it, or share " +
+        "any file to AirGrab from another app."
+
 /**
  * The one screen.
  *
@@ -38,10 +46,6 @@ import kotlinx.coroutines.launch
  * gesture that did not work explainable rather than mysterious — but they sit
  * at the bottom, folded away.
  */
-private const val PICK_HINT =
-    "Make a fist to send this. Tap another photo to choose it, or share " +
-        "any file to AirGrab from another app."
-
 class MainActivity : AppCompatActivity() {
 
     private lateinit var root: LinearLayout
@@ -470,7 +474,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun thumbnailView(
         photo: PhotoLibrary.Photo,
-        bitmap: android.graphics.Bitmap?,
+        bitmap: Bitmap?,
         edge: Int,
     ): ImageView {
         val radius = Style.dp(this, 10).toFloat()
@@ -484,8 +488,8 @@ class MainActivity : AppCompatActivity() {
                 setColor(Style.divider(this@MainActivity))
             }
             clipToOutline = true
-            outlineProvider = object : android.view.ViewOutlineProvider() {
-                override fun getOutline(view: View, outline: android.graphics.Outline) {
+            outlineProvider = object : ViewOutlineProvider() {
+                override fun getOutline(view: View, outline: Outline) {
                     outline.setRoundRect(0, 0, view.width, view.height, radius)
                 }
             }
