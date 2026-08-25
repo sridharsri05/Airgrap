@@ -76,6 +76,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var warningText: TextView
 
     private lateinit var overlayCard: LinearLayout
+    private lateinit var wifiCard: LinearLayout
 
     private lateinit var diagnosticsText: TextView
     private lateinit var diagnosticsToggle: Button
@@ -161,6 +162,9 @@ class MainActivity : AppCompatActivity() {
         // back, so there is no result to listen for.
         overlayCard.visibility =
             if (GestureOverlay.permitted(this)) View.GONE else View.VISIBLE
+        // Re-checked on resume: this is exactly the moment the user comes
+        // back from the Wi-Fi panel having turned it on.
+        wifiCard.visibility = if (wifiIsOn()) View.GONE else View.VISIBLE
     }
 
     private fun requestOverlayPermission() {
@@ -188,6 +192,7 @@ class MainActivity : AppCompatActivity() {
             setBackgroundColor(Style.background(this@MainActivity))
             setPadding(pad, Style.dp(this@MainActivity, 28), pad, pad)
             addView(stateCard())
+            addView(wifiCard())
             addView(contentCard())
             addView(devicesCard())
             addView(receivedCard())
@@ -300,6 +305,55 @@ class MainActivity : AppCompatActivity() {
         }
         return receivedCard
     }
+
+    /**
+     * Shown only while Wi-Fi is actually off.
+     *
+     * Every file-sharing app the user knows asks for Wi-Fi the moment it
+     * opens, and AirGrab silently showed "Looking for your PC" instead --
+     * which is technically true and completely unhelpful when the radio the
+     * search depends on is disabled. The button opens Android's own Wi-Fi
+     * panel over the app, so turning it on is one tap and no navigation.
+     *
+     * Wi-Fi only. Bluetooth is deliberately NOT asked for: AirGrab does not
+     * use it, and asking for a radio it never touches would teach the user
+     * that its requests are noise.
+     */
+    private fun wifiCard(): LinearLayout {
+        wifiCard = Style.card(this).apply {
+            visibility = View.GONE
+            addView(Style.title(this@MainActivity, "WI-FI IS OFF"))
+            addView(Style.spacer(this@MainActivity, 10))
+            addView(
+                Style.body(
+                    this@MainActivity,
+                    "AirGrab finds your other devices over Wi-Fi. " +
+                        "Turn it on to be seen.",
+                )
+            )
+            addView(Style.spacer(this@MainActivity, 14))
+            addView(accentButton("Turn on Wi-Fi") { openWifiPanel() })
+        }
+        return wifiCard
+    }
+
+    private fun openWifiPanel() {
+        // The panel slides over the app rather than leaving it. Fall back to
+        // the full settings screen where a manufacturer removed the panel.
+        runCatching {
+            startActivity(Intent(android.provider.Settings.Panel.ACTION_WIFI))
+        }.onFailure {
+            runCatching {
+                startActivity(Intent(android.provider.Settings.ACTION_WIFI_SETTINGS))
+            }
+        }
+    }
+
+    private fun wifiIsOn(): Boolean =
+        runCatching {
+            (applicationContext.getSystemService(WIFI_SERVICE) as android.net.wifi.WifiManager)
+                .isWifiEnabled
+        }.getOrDefault(true) // no answer must not nag; the card is for a KNOWN-off radio
 
     private fun overlayCard(): LinearLayout {
         overlayCard = Style.card(this).apply {
