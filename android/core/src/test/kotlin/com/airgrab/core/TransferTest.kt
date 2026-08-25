@@ -280,4 +280,54 @@ class TransferTest {
             hashFile(file),
         )
     }
+
+    // ------------------------------------------------------------- naming
+
+    /**
+     * The name always comes from somewhere untrusted: a peer over the
+     * network, or another application handing over a share. These cases
+     * are the reason the logic lives in one function instead of the three
+     * copies it had grown into, one of which had lost the dots check.
+     */
+    @Test
+    fun `a plain name passes through`() {
+        assertEquals("holiday.jpg", safeFileName("holiday.jpg"))
+    }
+
+    @Test
+    fun `path separators are stripped, both kinds`() {
+        assertEquals("evil.txt", safeFileName("../../evil.txt"))
+        assertEquals("evil.exe", safeFileName("..\\..\\Windows\\evil.exe"))
+        assertEquals("passwd", safeFileName("/etc/passwd"))
+    }
+
+    @Test
+    fun `names that are only dots fall back`() {
+        // "." resolves to the directory itself and ".." to its parent.
+        assertEquals("received", safeFileName("."))
+        assertEquals("received", safeFileName(".."))
+        assertEquals("received", safeFileName(""))
+        assertEquals("received", safeFileName("   "))
+    }
+
+    @Test
+    fun `a NUL cannot smuggle a different name past the check`() {
+        // Every filesystem call underneath truncates at a NUL, so
+        // "safe.txt\u0000.exe" would be inspected as one name and opened
+        // as another.
+        assertEquals("safe.txt.exe", safeFileName("safe.txt\u0000.exe"))
+        assertFalse(safeFileName("a\u0000b").contains('\u0000'))
+    }
+
+    @Test
+    fun `the fallback is the caller's to choose`() {
+        // Shared content says "shared-file"; a received transfer says
+        // "received". Neither should ever see the other's wording.
+        assertEquals("shared-file", safeFileName("..", fallback = "shared-file"))
+    }
+
+    @Test
+    fun `a leading dot is kept, since hidden files are legitimate`() {
+        assertEquals(".bashrc", safeFileName(".bashrc"))
+    }
 }

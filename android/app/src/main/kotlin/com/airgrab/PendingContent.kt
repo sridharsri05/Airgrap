@@ -5,6 +5,7 @@ import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.util.Log
+import com.airgrab.core.safeFileName
 import java.io.File
 import java.util.concurrent.atomic.AtomicReference
 
@@ -117,11 +118,10 @@ object PendingContent {
 
         val raw = queried ?: uri.lastPathSegment ?: "shared-file"
 
-        // The name came from another application. Path separators must not
-        // survive into a filename, on this device or on the peer's.
-        return raw.replace("\\", "/")
-            .substringAfterLast('/')
-            .ifBlank { "shared-file" }
+        // Same rule the receiving side applies, from the same tested function.
+        // The name came from another application, and must not carry path
+        // separators into a filename here or on the peer.
+        return safeFileName(raw, fallback = "shared-file")
     }
 
     private fun sizeOf(resolver: ContentResolver, uri: Uri): Long? = runCatching {

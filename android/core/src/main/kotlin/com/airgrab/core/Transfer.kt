@@ -110,17 +110,39 @@ class TicketStore(private val clock: () -> Long = { System.nanoTime() / 1_000_00
 }
 
 /**
- * Resolve a safe, non-colliding path inside [directory].
+ * Reduce a name from elsewhere to something safe to use as a filename.
  *
- * The basename is taken deliberately: a peer-supplied name containing path
- * separators must never escape the destination folder. Backslashes are
- * normalised first, because the peer is very likely the Windows desktop and a
- * Windows-style traversal must not survive on Android either.
+ * "Elsewhere" is either a peer over the network or another application on
+ * this device, and neither is trusted. The basename is taken deliberately: a
+ * name containing path separators must never escape the folder it is written
+ * into. Backslashes are normalised first, because the peer is very likely the
+ * Windows desktop and a Windows-style traversal must not survive on Android
+ * either.
+ *
+ * This lives in one place because it existed in three, and they had drifted:
+ * the copy guarding shared content had lost the dots check, so a file called
+ * ".." resolved to the containing directory's parent.
+ */
+fun safeFileName(raw: String, fallback: String = "received"): String {
+    val basename = raw.replace("\\", "/").substringAfterLast('/').trim()
+
+    // A name of only dots resolves to the directory itself or its parent.
+    if (basename.isEmpty() || basename == "." || basename == "..") return fallback
+
+    // Filtered character by character rather than through an escape
+    // sequence, which is how a literal NUL byte ended up in this source
+    // once already. A NUL truncates the path in every filesystem call
+    // underneath, so a name containing one can address a different file
+    // than it appears to.
+    return basename.filter { it != '\u0000' && it != '/' }
+        .ifEmpty { fallback }
+}
+
+/**
+ * Resolve a safe, non-colliding path inside [directory].
  */
 fun uniqueDestination(directory: File, filename: String): File {
-    val safe = filename.replace("\\", "/").substringAfterLast('/').ifEmpty { "received" }
-    // A name of only dots resolves to the directory itself or its parent.
-    val cleaned = if (safe == "." || safe == "..") "received" else safe
+    val cleaned = safeFileName(filename)
 
     var candidate = File(directory, cleaned)
     if (!candidate.exists()) return candidate
