@@ -52,6 +52,25 @@ _GESTURE_TYPES = frozenset(
 PROGRESS_INTERVAL_SECONDS = 0.25
 UPLOAD_CHUNK = 256 * 1024
 
+# aiohttp's default is a five-minute cap on the WHOLE request, which is fine
+# for a photo and wrong for a film: two gigabytes over ordinary Wi-Fi takes
+# longer than that, so the transfer was killed from this side mid-flight and
+# reported as a network failure.
+#
+# There is no honest ceiling on how long a legitimate transfer may take -- it
+# depends entirely on the file and the link -- so the total is removed.
+#
+# Deliberately NO sock_read either, tempting as it is as a stall detector.
+# During a large upload this side is writing, not reading: no response byte
+# arrives until the whole body is sent, so a read timeout would fire on a
+# perfectly healthy transfer and recreate the bug one layer down. A peer that
+# genuinely disappears surfaces as a write failure on the socket, and the
+# control channel notices independently through its own ping.
+#
+# connect stays, because a device that never answers should fail quickly
+# rather than look like a slow transfer.
+_CLIENT_TIMEOUT = aiohttp.ClientTimeout(total=None, connect=15)
+
 
 @dataclass
 class NodeConfig:
@@ -441,7 +460,9 @@ class Node:
     @contextlib.asynccontextmanager
     async def _connect(self, host: str, port: int, expect_fp: str | None = None):
         connector = aiohttp.TCPConnector(ssl=self._client_ssl())
-        async with aiohttp.ClientSession(connector=connector) as http:
+        async with aiohttp.ClientSession(
+            connector=connector, timeout=_CLIENT_TIMEOUT
+        ) as http:
             async with http.ws_connect(f"https://{host}:{port}/control") as ws:
                 seq = {"n": 0}
 

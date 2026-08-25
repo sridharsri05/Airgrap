@@ -477,7 +477,28 @@ class Node(val config: NodeConfig, val identity: FileIdentity) {
 
     private fun newClient(): HttpClient = HttpClient(CIO) {
         install(ClientWebSockets)
-        engine { https { trustManager = TrustEverything } }
+        engine {
+            https { trustManager = TrustEverything }
+
+            // CIO's default is fifteen seconds for the whole request, which
+            // is not a timeout on reaching the peer — it covers the upload
+            // body as well. Any file that takes longer than fifteen seconds
+            // to send is cut off, which is most videos on most networks.
+            //
+            // Long.MAX_VALUE, and NOT zero. Zero looks like the idiomatic
+            // way to say "no limit" and is not: setting it made every
+            // transfer fail, caught by the loopback test that actually moves
+            // a file between two nodes. The unit tests around it all passed,
+            // because none of them send anything.
+            //
+            // There is no honest ceiling here anyway: how long a legitimate
+            // transfer takes depends on the file and the link, and a peer
+            // going away already surfaces as a socket failure. Reaching a
+            // device that is not there is bounded separately, below.
+            requestTimeout = Long.MAX_VALUE
+            endpoint.connectTimeout = 15_000
+            endpoint.keepAliveTime = 30_000
+        }
     }
 
     /** A connected, mutually authenticated control channel. */

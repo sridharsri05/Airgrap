@@ -5,6 +5,7 @@ import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.util.Log
+import com.airgrab.core.fitsWithHeadroom
 import com.airgrab.core.safeFileName
 import java.io.File
 import java.util.concurrent.atomic.AtomicReference
@@ -23,12 +24,22 @@ import java.util.concurrent.atomic.AtomicReference
  * avoids MediaProjection's full-screen recording prompt for something the user
  * has already pointed at.
  */
+/**
+ * The outcome of taking something in.
+ *
+ * A plain null answered "why not?" with silence, so every failure reached the
+ * user as "Could not read that file" -- including a five-gigabyte film on a
+ * full phone, which was read perfectly well and simply did not fit. A refusal
+ * the user cannot act on is barely better than no message at all.
+ */
+sealed interface Held {
+    data class Ready(val file: File) : Held
+    data class Refused(val message: String) : Held
+}
+
 object PendingContent {
 
     const val TAG = "AirGrabContent"
-
-    /** Room for a video; beyond this the copy is refused rather than attempted. */
-    private const val MAX_BYTES = 2L * 1024 * 1024 * 1024
 
     private val pending = AtomicReference<File?>(null)
 
@@ -48,14 +59,19 @@ object PendingContent {
      * failed with a permission error minutes later, pointing nowhere near the
      * share that caused it.
      */
-    fun accept(context: Context, uri: Uri): File? {
+    fun accept(context: Context, uri: Uri): Held {
         val resolver = context.contentResolver
         val name = displayName(resolver, uri)
         val size = sizeOf(resolver, uri)
 
-        if (size != null && size > MAX_BYTES) {
-            Log.w(TAG, "refusing $name: $size bytes")
-            return null
+        // Whether it fits, not whether it is under a number somebody chose.
+        // A flat two-gigabyte ceiling refused a long video on a phone with
+        // 200GB free and accepted a 1.9GB one on a phone with 300MB free.
+        if (size != null && !fitsWithHeadroom(size, context.cacheDir.usableSpace)) {
+            Log.w(TAG, "refusing $name: $size bytes, ${context.cacheDir.usableSpace} free")
+            return Held.Refused(
+                "Not enough space to queue $name. Free up some room and try again."
+            )
         }
 
         // Released BEFORE the copy, never after.
@@ -77,7 +93,7 @@ object PendingContent {
         val destination = File(directory, name)
         return try {
             resolver.openInputStream(uri).use { input ->
-                if (input == null) return null
+                if (input == null) return Held.Refused("Could not read that file.")
                 destination.outputStream().use { output -> input.copyTo(output) }
             }
 
@@ -87,16 +103,26 @@ object PendingContent {
             if (destination.length() == 0L && (size ?: 0L) > 0L) {
                 Log.e(TAG, "copy of $name produced no bytes")
                 destination.delete()
-                return null
+                return Held.Refused("That file came through empty.")
             }
 
             pending.set(destination)
             Log.i(TAG, "holding ${destination.name} (${destination.length()} bytes)")
-            destination
+            Held.Ready(destination)
+        } catch (exc: java.io.IOException) {
+            // Out of space mid-copy: the size was unknown, or another app
+            // filled the volume while this one was writing.
+            Log.e(TAG, "could not copy the shared file", exc)
+            destination.delete()
+            val full = exc.message?.contains("space", ignoreCase = true) == true
+            Held.Refused(
+                if (full) "Ran out of space while copying $name."
+                else "Could not read that file."
+            )
         } catch (exc: Throwable) {
             Log.e(TAG, "could not read the shared file", exc)
             destination.delete()
-            null
+            Held.Refused("Could not read that file.")
         }
     }
 

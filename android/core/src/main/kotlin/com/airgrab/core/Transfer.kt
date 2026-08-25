@@ -139,6 +139,30 @@ fun safeFileName(raw: String, fallback: String = "received"): String {
 }
 
 /**
+ * Space left unused after a copy, so the phone still works afterwards.
+ *
+ * A device with literally zero bytes free cannot write a log, take a photo,
+ * or in some cases finish booting. Filling the last of it to queue one
+ * outgoing file would be a poor trade.
+ */
+const val STORAGE_HEADROOM_BYTES = 256L * 1024 * 1024
+
+/**
+ * Whether a file of [size] can be copied into a volume with [usable] bytes
+ * free, without eating the headroom.
+ *
+ * This replaced a flat two-gigabyte ceiling. That number refused a three-hour
+ * video on a phone with 200GB free, and accepted a 1.9GB one on a phone with
+ * 300MB free — wrong in both directions, because the question was never how
+ * big the file is. It is whether it fits.
+ */
+fun fitsWithHeadroom(
+    size: Long,
+    usable: Long,
+    headroom: Long = STORAGE_HEADROOM_BYTES,
+): Boolean = size >= 0 && usable - size >= headroom
+
+/**
  * Resolve a safe, non-colliding path inside [directory].
  */
 fun uniqueDestination(directory: File, filename: String): File {

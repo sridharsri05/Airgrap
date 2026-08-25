@@ -112,7 +112,15 @@ object PhotoLibrary {
     fun holdLatest(context: Context): File? {
         val photo = latest(context) ?: return null
         Log.i(TAG, "grabbing the latest photo: ${photo.name}")
-        return PendingContent.accept(context, photo.uri)
+        // The reason is logged rather than shown: nobody is looking at the
+        // screen at this point -- they have just made a fist at the camera.
+        return when (val held = PendingContent.accept(context, photo.uri)) {
+            is Held.Ready -> held.file
+            is Held.Refused -> {
+                Log.w(TAG, "could not hold ${photo.name}: ${held.message}")
+                null
+            }
+        }
     }
 
     /**

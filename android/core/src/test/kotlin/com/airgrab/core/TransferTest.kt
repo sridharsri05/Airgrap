@@ -330,4 +330,44 @@ class TransferTest {
     fun `a leading dot is kept, since hidden files are legitimate`() {
         assertEquals(".bashrc", safeFileName(".bashrc"))
     }
+
+    // -------------------------------------------------------------- storage
+
+    private val gigabyte = 1024L * 1024 * 1024
+
+    @Test
+    fun `a large file fits on a phone with room for it`() {
+        // The case a flat two-gigabyte ceiling got wrong: a four-gigabyte
+        // video on a phone with 200GB free was refused for no reason the
+        // user could see.
+        assertTrue(fitsWithHeadroom(size = 4 * gigabyte, usable = 200 * gigabyte))
+    }
+
+    @Test
+    fun `a small file is refused when the phone is nearly full`() {
+        // And the other direction: a file well under any fixed ceiling still
+        // must not consume the last of the storage.
+        assertFalse(fitsWithHeadroom(size = 300L * 1024 * 1024, usable = 400L * 1024 * 1024))
+    }
+
+    @Test
+    fun `the headroom is left intact, exactly`() {
+        val usable = 1024L * 1024 * 1024
+        assertTrue(fitsWithHeadroom(usable - STORAGE_HEADROOM_BYTES, usable))
+        assertFalse(fitsWithHeadroom(usable - STORAGE_HEADROOM_BYTES + 1, usable))
+    }
+
+    @Test
+    fun `an empty file fits whenever the headroom is already there`() {
+        assertTrue(fitsWithHeadroom(0, STORAGE_HEADROOM_BYTES))
+        assertFalse(fitsWithHeadroom(0, STORAGE_HEADROOM_BYTES - 1))
+    }
+
+    @Test
+    fun `a negative size is refused rather than treated as free space`() {
+        // Android's OpenableColumns.SIZE is documented as possibly absent and
+        // is -1 from some providers. Subtracting that would ADD space and let
+        // anything through.
+        assertFalse(fitsWithHeadroom(-1, 10 * gigabyte))
+    }
 }

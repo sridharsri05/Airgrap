@@ -680,12 +680,8 @@ class MainActivity : AppCompatActivity() {
         if (intent?.action != Intent.ACTION_SEND) return
         val uri = intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java) ?: return
 
-        val held = PendingContent.accept(this, uri)
-        Toast.makeText(
-            this,
-            if (held == null) "Could not read that file" else "Ready to send ${held.name}",
-            Toast.LENGTH_LONG,
-        ).show()
+        Toast.makeText(this, describe(PendingContent.accept(this, uri)), Toast.LENGTH_LONG)
+            .show()
     }
 
     // ---------------------------------------------------------------- photos
@@ -745,17 +741,25 @@ class MainActivity : AppCompatActivity() {
         setOnClickListener { choose(photo) }
     }
 
+    /**
+     * What to tell the user about a file they just handed over.
+     *
+     * A refusal carries its own sentence, because the reasons are genuinely
+     * different: a file that will not fit is not a file that could not be
+     * read, and "Could not read that file" sent someone hunting for a corrupt
+     * photo when their phone was simply full.
+     */
+    private fun describe(held: Held): String = when (held) {
+        is Held.Ready -> "Ready to send ${held.file.name}"
+        is Held.Refused -> held.message
+    }
+
     /** Copy the chosen photo into the outgoing slot, off the main thread. */
     private fun choose(photo: PhotoLibrary.Photo) {
         lifecycleScope.launch(Dispatchers.IO) {
             val held = PendingContent.accept(this@MainActivity, photo.uri)
             runOnUiThread {
-                Toast.makeText(
-                    this@MainActivity,
-                    if (held == null) "Could not read that photo"
-                    else "Ready to send ${held.name}",
-                    Toast.LENGTH_SHORT,
-                ).show()
+                Toast.makeText(this@MainActivity, describe(held), Toast.LENGTH_LONG).show()
             }
         }
     }
