@@ -23,6 +23,7 @@ A Moto G85 5G (Android 16) and a Windows 11 desktop, 24 August:
 | Piece | Note |
 |-------|------|
 | Photo picker and latest-photo grab | Sends the original file, no share step |
+| The redesigned screen | HarmonyOS colours, hand indicator, arrived-files list |
 | PC → phone | The reverse direction has never been run |
 | Phone → phone | Should work on one Wi-Fi; needs two handsets to know |
 | Signed release APK | Built before last night's fixes; needs rebuilding |
