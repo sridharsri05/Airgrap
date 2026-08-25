@@ -448,7 +448,12 @@ class MainActivity : AppCompatActivity() {
                     "Open your palm at the other device to drop it.",
                 )
 
-            service.activity != "Ready" ->
+            // Only while it is still news. "Connected to PADMA-PC" is a
+            // status, not an event: it never gets superseded, so showing it
+            // whenever it was not the word "Ready" meant the card sat on it
+            // forever and the sentence telling the user to make a fist was
+            // never seen again after the first link came up.
+            service.activity != "Ready" && service.activityIsFresh() ->
                 setState("✓", Style.good(this), service.activity, "")
 
             service.peers.isEmpty() ->

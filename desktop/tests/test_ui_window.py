@@ -42,6 +42,29 @@ def test_the_peer_name_is_substituted():
     assert "{peer}" not in detail
 
 
+def test_no_state_can_leave_a_placeholder_on_screen():
+    """The bug this exists for reached a real user's screen.
+
+    describe substituted the detail and not the headline, so the window said
+    "Could not reach {peer}" in twenty-point bold. Every state is checked
+    here, in both halves, with and without a name, because the next state
+    someone adds will have the same trap in it.
+    """
+    for kind in STATES:
+        for peer in (None, "Moto G85"):
+            for file in (None, "holiday.jpg"):
+                _, _, headline, detail = describe(kind, peer=peer, file=file)
+                assert "{" not in headline, f"{kind} headline: {headline}"
+                assert "}" not in headline, f"{kind} headline: {headline}"
+                assert "{" not in detail, f"{kind} detail: {detail}"
+                assert "}" not in detail, f"{kind} detail: {detail}"
+
+
+def test_a_headline_can_name_the_peer_too():
+    _, _, headline, _ = describe("unreachable", peer="Moto G85")
+    assert headline == "Could not reach Moto G85"
+
+
 def test_a_missing_peer_name_still_reads_as_a_sentence():
     # Discovery may not have filled in a name yet. A cosmetic gap is fine; a
     # render that raises in front of the user is not.

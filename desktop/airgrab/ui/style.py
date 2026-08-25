@@ -52,23 +52,25 @@ MONO = "Consolas"
 # not carry the state, which is the only reason it is there.
 GLYPH = "Segoe UI Symbol"
 
+FONT_WORDMARK = (FACE, 12, "bold")
 FONT_TITLE = (FACE, 8, "bold")
-FONT_HEADLINE = (FACE, 16, "bold")
+FONT_HEADLINE = (FACE, 19, "bold")
 FONT_BODY = (FACE, 10)
-FONT_STRONG = (FACE, 10, "bold")
+FONT_STRONG = (FACE, 11, "bold")
 FONT_META = (MONO, 8)
 FONT_CHIP = (FACE, 8, "bold")
 FONT_BUTTON = (FACE, 10, "bold")
-FONT_GLYPH = (GLYPH, 15)
+FONT_GLYPH = (GLYPH, 20)
+FONT_TINY_GLYPH = (GLYPH, 12)
 
-CARD_RADIUS = 16
-CARD_PAD = 14
+CARD_RADIUS = 18
+CARD_PAD = 16
 GAP = 10
 
 # The window is a fixed width on purpose: a resizable window means every card
 # has to recompute its rounded outline on every drag, and there is nothing
 # here that benefits from being wider.
-WINDOW_WIDTH = 400
+WINDOW_WIDTH = 430
 WINDOW_HEIGHT = 720
 
 

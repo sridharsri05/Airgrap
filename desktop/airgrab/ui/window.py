@@ -98,9 +98,18 @@ def describe(kind: str, peer: str | None = None, file: str | None = None):
     in a name yet is not.
     """
     glyph, tone, headline, detail = STATES.get(kind, UNKNOWN)
-    detail = detail.replace("{peer}", peer or "the other device")
-    detail = detail.replace("{file}", file or "The file")
-    return glyph, tone, headline, detail
+
+    # Both halves, not just the detail. Substituting only the sentence put
+    # the words "Could not reach {peer}" on screen as a headline, in front of
+    # the user, which is exactly the kind of thing that reads as unfinished
+    # software even when everything underneath is working.
+    def fill(text: str) -> str:
+        return (
+            text.replace("{peer}", peer or "the other device")
+                .replace("{file}", file or "The file")
+        )
+
+    return glyph, tone, fill(headline), fill(detail)
 
 
 # --------------------------------------------------------------- the snapshot
@@ -169,6 +178,7 @@ class _Card:
             width=width, height=10,
         )
         self.body = tkinter.Frame(self.canvas, bg=pal["surface"])
+        self._fill = pal["surface"]
         self._rect = None
         self.canvas.create_window(
             style.CARD_PAD, style.CARD_PAD, anchor="nw", window=self.body,
@@ -181,6 +191,16 @@ class _Card:
     def clear(self) -> None:
         for child in self.body.winfo_children():
             child.destroy()
+
+    def tint(self, colour: str) -> None:
+        """Colour the whole card, not just something inside it.
+
+        Set BEFORE the body is filled: every label takes its background from
+        its parent, so a tint applied afterwards would leave each line of text
+        sitting on a rectangle of the old colour.
+        """
+        self._fill = colour
+        self.body.configure(bg=colour)
 
     def refresh(self) -> None:
         """Size the canvas to its contents and repaint the outline.
@@ -195,7 +215,8 @@ class _Card:
             self.canvas.delete(self._rect)
         self._rect = style.rounded_rect(
             self.canvas, 1, 1, self.width - 1, height - 1, style.CARD_RADIUS,
-            fill=self.pal["surface"], outline=self.pal["rule"],
+            fill=self._fill,
+            outline=self.pal["rule"] if self._fill == self.pal["surface"] else self._fill,
         )
         self.canvas.tag_lower(self._rect)
 
@@ -219,16 +240,16 @@ class _Pill:
         self.filled = filled
         self.height = 32
 
-        self.fill = pal["accent"] if filled else style.wash(
-            pal["accent"], pal["surface"], 0.12
-        )
+        ground = parent["bg"]
+        self.fill = pal["accent"] if filled else style.wash(pal["accent"], ground, 0.14)
         self.ink = pal["on_accent"] if filled else pal["accent"]
+        self.hover = style.wash(pal["ink"], self.fill, 0.10)
 
         self.canvas = tkinter.Canvas(
-            parent, bg=pal["surface"], highlightthickness=0, bd=0,
+            parent, bg=ground, highlightthickness=0, bd=0,
             width=width, height=self.height, cursor="hand2",
         )
-        style.rounded_rect(
+        self._shape = style.rounded_rect(
             self.canvas, 0, 0, width, self.height, self.height / 2,
             fill=self.fill, outline="",
         )
@@ -237,6 +258,12 @@ class _Pill:
             fill=self.ink, font=style.FONT_BUTTON,
         )
         self.canvas.bind("<Button-1>", self._clicked)
+        # Something that can be pressed should look like it notices being
+        # pointed at. Without this the buttons read as coloured labels.
+        self.canvas.bind("<Enter>", lambda _e: self.canvas.itemconfigure(
+            self._shape, fill=self.hover))
+        self.canvas.bind("<Leave>", lambda _e: self.canvas.itemconfigure(
+            self._shape, fill=self.fill))
 
     def _clicked(self, _event) -> None:
         try:
@@ -366,6 +393,23 @@ class MainWindow:
         holder = tkinter.Frame(content, bg=pal["ground"])
         holder.pack(padx=style.GAP, pady=style.GAP)
 
+        # The wordmark lives above the cards, where a title belongs. Inside
+        # the state card it competed with the one sentence that matters.
+        head = tkinter.Frame(holder, bg=pal["ground"])
+        head.pack(fill="x", pady=(2, 10))
+        mark = tkinter.Canvas(
+            head, width=22, height=22, bg=pal["ground"], highlightthickness=0, bd=0
+        )
+        style.rounded_rect(mark, 0, 0, 22, 22, 7, fill=pal["accent"], outline="")
+        mark.create_text(
+            11, 11, text="↑", fill=pal["on_accent"], font=(style.FACE, 10, "bold")
+        )
+        mark.pack(side="left")
+        tkinter.Label(
+            head, text="AirGrab", font=style.FONT_WORDMARK,
+            fg=pal["ink"], bg=pal["ground"],
+        ).pack(side="left", padx=(8, 0))
+
         for name in ("state", "outgoing", "devices", "arrivals"):
             card = _Card(holder, pal, inner)
             card.pack(pady=(0, style.GAP))
@@ -434,6 +478,9 @@ class MainWindow:
         self._render_arrivals(snapshot)
 
     def _render_state(self, snapshot: Snapshot) -> None:
+        """The hero. The whole card takes the state's colour as a wash, so
+        the answer to "is it working" is readable from across the room before
+        a single word is: green card good, amber card needs you."""
         import tkinter
 
         pal = self._pal
@@ -444,33 +491,38 @@ class MainWindow:
             snapshot.kind, snapshot.peer, snapshot.file
         )
         colour = pal.get(tone, pal["muted"])
+        ground = style.wash(colour, pal["surface"], 0.10)
+        card.tint(ground)
 
-        self._title(card.body, "AIRGRAB")
-
-        row = tkinter.Frame(card.body, bg=pal["surface"])
-        row.pack(fill="x", pady=(12, 0))
+        row = tkinter.Frame(card.body, bg=ground)
+        row.pack(fill="x", pady=(4, 0))
 
         badge = tkinter.Canvas(
-            row, width=44, height=44, bg=pal["surface"], highlightthickness=0, bd=0
+            row, width=56, height=56, bg=ground, highlightthickness=0, bd=0
         )
         style.rounded_rect(
-            badge, 0, 0, 44, 44, 14,
-            fill=style.wash(colour, pal["surface"]), outline="",
+            badge, 0, 0, 56, 56, 18,
+            fill=style.wash(colour, ground, 0.22), outline="",
         )
-        badge.create_text(22, 22, text=glyph, fill=colour, font=style.FONT_GLYPH)
+        badge.create_text(28, 28, text=glyph, fill=colour, font=style.FONT_GLYPH)
         badge.pack(side="left")
 
-        text = tkinter.Frame(row, bg=pal["surface"])
-        text.pack(side="left", padx=(12, 0), fill="x", expand=True)
-        self._label(text, headline, style.FONT_HEADLINE, pal["ink"])
+        text = tkinter.Frame(row, bg=ground)
+        text.pack(side="left", padx=(14, 0), fill="x", expand=True)
+        headline_label = tkinter.Label(
+            text, text=headline, font=style.FONT_HEADLINE, fg=pal["ink"],
+            bg=ground, anchor="w", justify="left",
+            wraplength=card.width - 2 * style.CARD_PAD - 70,
+        )
+        headline_label.pack(fill="x")
 
         if detail:
             wrapped = tkinter.Label(
                 card.body, text=detail, font=style.FONT_BODY, fg=pal["muted"],
-                bg=pal["surface"], anchor="w", justify="left",
+                bg=ground, anchor="w", justify="left",
                 wraplength=card.width - 2 * style.CARD_PAD,
             )
-            wrapped.pack(fill="x", pady=(10, 0))
+            wrapped.pack(fill="x", pady=(12, 4))
 
         card.refresh()
 

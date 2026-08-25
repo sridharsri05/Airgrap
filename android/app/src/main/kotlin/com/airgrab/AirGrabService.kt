@@ -63,6 +63,12 @@ class AirGrabService : LifecycleService() {
         private const val CHANNEL_ID = "airgrab-link"
         private const val NOTIFICATION_ID = 1
 
+        /**
+         * How long a one-off event stays in the headline before the card
+         * goes back to saying what to do next.
+         */
+        const val ACTIVITY_HEADLINE_MILLIS = 6_000L
+
         const val ACTION_START = "com.airgrab.START"
         const val ACTION_STOP = "com.airgrab.STOP"
 
@@ -133,6 +139,25 @@ class AirGrabService : LifecycleService() {
     @Volatile
     var activity: String = "Ready"
         private set
+
+    /**
+     * When [activity] last changed, so the screen can stop repeating it.
+     *
+     * The state card showed this string whenever it was not the word "Ready",
+     * and "Connected to D_L_AR-AEEV03J" is not an event -- it is a status
+     * that never gets superseded. So the card sat on it permanently, and the
+     * one sentence the user needs, telling them to make a fist, was never
+     * shown at all after the first link came up.
+     *
+     * The notification still says it, which is where a status belongs.
+     */
+    @Volatile
+    var activityAt: Long = 0L
+        private set
+
+    /** True while [activity] is recent enough to be worth the headline. */
+    fun activityIsFresh(now: Long = System.currentTimeMillis()): Boolean =
+        now - activityAt < ACTIVITY_HEADLINE_MILLIS
 
     /** Peers currently visible, for the UI to render. */
     val peers: List<DiscoveredPeer> get() = discovery?.peers().orEmpty()
@@ -212,6 +237,7 @@ class AirGrabService : LifecycleService() {
             // is not paired.
             started.onIncomingFile = { file ->
                 activity = "Received ${file.name}"
+                activityAt = System.currentTimeMillis()
                 synchronized(received) {
                     received.addFirst(Arrival(file, file.length(), System.currentTimeMillis()))
                     while (received.size > 20) received.removeLast()
@@ -234,6 +260,7 @@ class AirGrabService : LifecycleService() {
                 },
                 onStatus = { text ->
                     activity = text
+                    activityAt = System.currentTimeMillis()
                     // The one outcome the user most needs to feel: the file
                     // actually left. A grab that picked nothing up is worth
                     // knowing about immediately too.

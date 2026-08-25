@@ -140,20 +140,44 @@ class Browser:
             return
 
         addresses = info.parsed_addresses()
-        if not addresses:
+        host = prefer_ipv4(addresses)
+        if host is None:
             return
 
         peer = DiscoveredPeer(
             fingerprint=fingerprint,
             name=props.get("name", "Unknown"),
             platform=props.get("plat", "unknown"),
-            host=addresses[0],
+            host=host,
             port=info.port or 0,
         )
         if self._peers.get(name) == peer:
             return
         self._peers[name] = peer
         self._on_found(peer)
+
+
+def prefer_ipv4(addresses: list[str]) -> str | None:
+    """Pick the address to actually dial, preferring IPv4.
+
+    zeroconf returns whatever the device advertised, in no useful order, and
+    a phone on a dual-stack network advertises both. Taking the first one got
+    an IPv6 address the PC then could not reach -- the window said "Could not
+    reach" while the device list showed a perfectly good 192.168 address
+    beside it, which is a confusing thing to be told.
+
+    The Android side already advertises IPv4 only, so this is the same
+    decision made on both halves. Link-local IPv6 is skipped outright: it
+    needs a scope identifier this code does not carry, so it can never be
+    dialled successfully.
+    """
+    for address in addresses:
+        if ":" not in address:
+            return address
+    for address in addresses:
+        if not address.lower().startswith("fe80"):
+            return address
+    return None
 
 
 def _local_address() -> str:
