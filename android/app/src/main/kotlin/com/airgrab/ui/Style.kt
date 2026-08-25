@@ -45,8 +45,11 @@ object Style {
     fun background(context: Context): Int =
         if (dark(context)) Color.parseColor("#0D0D0D") else Color.parseColor("#F1F3F5")
 
+    // Spelled out rather than Color.WHITE so every token in this file reads
+    // the same way, and so the parity test against the desktop palette can
+    // compare them as text.
     fun surface(context: Context): Int =
-        if (dark(context)) Color.parseColor("#1B1C1E") else Color.WHITE
+        if (dark(context)) Color.parseColor("#1B1C1E") else Color.parseColor("#FFFFFF")
 
     /** One step in from a card, for the thing the card is about. */
     fun raised(context: Context): Int =

@@ -100,15 +100,22 @@ class GestureOverlay(private val context: Context) {
         private val density = resources.displayMetrics.density
         private fun dp(value: Float) = value * density
 
+        // Matching desktop/airgrab/ui/overlay.py, so a user who has seen one
+        // device recognises the other. These are the dark-ground variants of
+        // the palette in ui/Style.kt, and stay dark in both system themes:
+        // the pill sits over whatever the user happens to be looking at, so
+        // it cannot borrow a ground it does not control.
         private val accent = when (kind) {
-            Kind.HOLDING -> Color.parseColor("#4C8DFF")
-            Kind.SENT -> Color.parseColor("#3FD07E")
-            Kind.RECEIVED -> Color.parseColor("#3FD07E")
+            Kind.HOLDING -> Color.parseColor("#6E9BFF")
+            Kind.SENT -> Color.parseColor("#5FD08A")
+            Kind.RECEIVED -> Color.parseColor("#5FD08A")
             Kind.CANCELLED -> Color.parseColor("#F0724F")
         }
 
         private val pillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.parseColor("#F21A1D21")
+            // Night Black's surface, at 95% so what is underneath still reads
+            // as being underneath.
+            color = Color.parseColor("#F21B1C1E")
         }
         private val ripplePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
@@ -116,7 +123,7 @@ class GestureOverlay(private val context: Context) {
         }
         private val dotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = accent }
         private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.WHITE
+            color = Color.parseColor("#F2F3F5")
             textSize = dp(14f)
             typeface = android.graphics.Typeface.DEFAULT_BOLD
         }
