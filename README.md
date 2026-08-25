@@ -28,7 +28,12 @@ That one-time step creates the firewall rule that lets your phone reach the PC.
 Every launch after this is an ordinary double-click.
 
 AirGrab lives in the system tray, next to the clock. A blue icon means it is
-running.
+running. **Double-click it** to open the window, which shows what is happening,
+which devices are around, and what has arrived.
+
+Closing that window hides it; AirGrab keeps running, which is the point of an
+app that answers a gesture made while you are using something else. **Quit** is
+what actually stops it.
 
 ### 2. The phone
 
@@ -92,6 +97,10 @@ use the phone is already in your pocket, so this happens by itself.
 
 **What gets sent** is your most recent photo, at full quality — the actual
 file, not a screenshot. Take a photo, make a fist, and it is on your PC.
+
+Any file works, including video, and there is no size limit beyond your own
+free space: AirGrab refuses a file only when copying it would leave the phone
+with under 256MB free, and says so.
 
 To send something else, either tap a different photo in AirGrab's strip of
 recent ones, or **share** any file to AirGrab from another app. Sharing works

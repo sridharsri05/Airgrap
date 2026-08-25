@@ -77,8 +77,10 @@ launches work. Without it the tray shows
 "Firewall is blocking AirGrab — run once as administrator", discovery still
 works, but incoming transfers will not.
 
-It is a tray application: there is no window. Look for the icon in the
-notification area. Quit from its tray menu.
+AirGrab lives in the notification area. **Double-click the tray icon** to open
+its window: what is happening, which devices are around, and what has arrived.
+Closing the window hides it and leaves AirGrab running -- Quit, in the window's
+footer or the tray menu, is what actually stops it.
 
 The build is unsigned, so SmartScreen will show "Windows protected your PC" on
 first launch — More info → Run anyway.

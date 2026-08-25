@@ -49,6 +49,15 @@ HIDDEN_IMPORTS = [
     "PIL._tkinter_finder",
     "tkinter",
     "tkinter.messagebox",
+    # The settings dialog imports these inside the function that builds it,
+    # so nothing references them at module level for PyInstaller to follow.
+    # Missing, they fail at the moment the user opens Settings and nowhere
+    # earlier -- in a build with no console to say why.
+    "tkinter.ttk",
+    "tkinter.filedialog",
+    "airgrab.ui.settings",
+    "airgrab.ui.window",
+    "airgrab.ui.shell",
     "mediapipe.python._framework_bindings",
     "airgrab.app",
 ]
@@ -148,6 +157,13 @@ def build() -> int:
             # taskbar and Alt-Tab show. The tray icon is drawn at runtime and
             # is a separate thing.
             command += ["--icon", str(ICON)]
+            # And bundled as a FILE as well, which is a different job: the
+            # main window reads it at runtime to set its own title-bar icon.
+            # --icon alone stamps the executable and leaves nothing on disk
+            # to open, so without this the window falls back to Tk's feather
+            # in the packaged build while looking correct when run from
+            # source.
+            command += ["--add-data", f"{ICON}{os_sep()}assets"]
         else:
             print(f"No icon at {ICON}; building with the default. "
                   f"Run: python ../tools/make_icons.py")
