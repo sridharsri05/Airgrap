@@ -16,6 +16,7 @@ import asyncio
 import logging
 import os
 import threading
+import time
 from pathlib import Path
 
 from airgrab.camera import GestureCameraLoop, open_default_camera
@@ -26,8 +27,14 @@ from airgrab.gesture import EventType, GestureEvent
 from airgrab.node import Node, NodeConfig
 from airgrab.session import GestureSession
 from airgrab.ui.overlay import Overlay
+from airgrab.ui.shell import Shell
 from airgrab.ui.tray import Tray
+from airgrab.ui.window import Actions, Arrival, Device, MainWindow, Snapshot
 from airgrab.windows import ensure_firewall_rule
+
+# How many arrivals the window remembers. A record of what just happened, not
+# a file manager -- the folder itself is one click away.
+KEPT_ARRIVALS = 20
 
 
 def _configure_logging(data_dir: Path) -> logging.Logger:
@@ -59,10 +66,23 @@ class AirGrabApp:
         self._last_pose = None
         self._settings = load_settings(self._data_dir / "settings.json")
         self._peers: dict[str, DiscoveredPeer] = {}
+
+        # One thread owns every Tk call, and everything that wants to show
+        # something hands it work. Tkinter never raises when this rule is
+        # broken -- it just never paints, which is what made the pairing
+        # dialog invisible earlier in this project.
+        self._shell = Shell()
+
         # The tray balloon is easy to miss and can be suppressed by focus
         # assist without saying so. This is the same indicator the phone
         # shows, in the same colours.
-        self._overlay = Overlay()
+        self._overlay = Overlay(self._shell)
+
+        # What the window is currently saying, kept here because the tray and
+        # the window have to agree: they describe the same moment.
+        self._state: tuple[str, str | None, str | None] = ("starting", None, None)
+        self._arrivals: list[Arrival] = []
+
         self._loop = asyncio.new_event_loop()
 
         self._node = Node(
@@ -82,11 +102,22 @@ class AirGrabApp:
         self._session.on_event = self._on_gesture_event
         self._session.on_transfer = self._on_transfer_finished
 
+        self._window = MainWindow(
+            self._shell,
+            Actions(
+                pair=self._pair_with,
+                open_folder=self._open_downloads,
+                settings=self._open_settings,
+                quit=self.stop,
+            ),
+        )
+
         self._tray = Tray(
             on_open_downloads=self._open_downloads,
             on_pair=self._pair_with_first_peer,
             on_quit=self.stop,
             on_settings=self._open_settings,
+            on_open_window=self._window.show,
         )
         self._advertiser: Advertiser | None = None
         self._browser: Browser | None = None
@@ -96,9 +127,10 @@ class AirGrabApp:
     # ------------------------------------------------------------- lifecycle
 
     def run(self) -> None:
-        # Started before the tray takes the main thread. The overlay owns a
-        # thread of its own because every Tk call has to happen on one thread,
-        # and pystray already owns this one.
+        # Started before the tray takes the main thread. Tk gets a thread of
+        # its own because every Tk call has to happen on one thread, and
+        # pystray already owns this one for the life of the process.
+        self._shell.start()
         self._overlay.start()
         threading.Thread(target=self._run_loop, daemon=True).start()
         self._tray.run()
@@ -112,11 +144,12 @@ class AirGrabApp:
         await self._node.start()
 
         if not ensure_firewall_rule(self._node.port):
-            self._tray.set_status(
-                "Firewall is blocking AirGrab — run once as administrator", "problem"
+            self._set_state(
+                "firewall",
+                tray="Firewall is blocking AirGrab — run once as administrator",
             )
         else:
-            self._tray.set_status("Waiting for devices", "idle")
+            self._set_state("looking", tray="Waiting for devices")
 
         self._advertiser = Advertiser(
             self._node.identity.fingerprint,
@@ -190,6 +223,8 @@ class AirGrabApp:
             self._camera.stop()
             self._camera = None
         self._overlay.stop()
+        self._window.hide()
+        self._shell.stop()
         future = asyncio.run_coroutine_threadsafe(self._stop_services(), self._loop)
         try:
             future.result(timeout=10)
@@ -204,7 +239,10 @@ class AirGrabApp:
         self._log.info("found %s at %s:%s", peer.name, peer.host, peer.port)
         self._peers[peer.fingerprint] = peer
         if not self._node.trust.is_trusted(peer.fingerprint):
-            self._tray.set_status(f"{peer.name} found — not paired yet", "idle")
+            self._set_state(
+                "unpaired", peer=peer.name,
+                tray=f"{peer.name} found — not paired yet", tone="idle",
+            )
             return
 
         # A paired device gets a control channel immediately. Gesture events
@@ -216,20 +254,82 @@ class AirGrabApp:
         try:
             await self._node.open_link(peer.host, peer.port, expect_fp=peer.fingerprint)
         except Exception as exc:
-            self._tray.set_status(f"Could not reach {peer.name}: {exc}", "problem")
+            self._set_state(
+                "unreachable", peer=peer.name,
+                tray=f"Could not reach {peer.name}: {exc}",
+            )
             return
-        ready = "Ready" if self._camera_ready else "Ready (gestures off)"
-        self._tray.set_status(f"{ready} — connected to {peer.name}", "connected")
+        if self._camera_ready:
+            self._set_state("ready", peer=peer.name)
+        else:
+            self._set_state(
+                "gestures_off", peer=peer.name,
+                tray=f"Connected to {peer.name} — gestures off",
+            )
 
     def _on_peer_lost(self, fingerprint: str) -> None:
         peer = self._peers.pop(fingerprint, None)
         self._session.forget_peer(fingerprint)
-        if peer is not None:
-            self._tray.set_status(f"{peer.name} went offline", "idle")
         if not self._peers:
-            self._tray.set_status(
-                "No devices found — check both are on the same Wi-Fi", "idle"
+            self._set_state(
+                "looking",
+                tray="No devices found — check both are on the same Wi-Fi",
+                tone="idle",
             )
+        elif peer is not None:
+            self._set_state(
+                "looking", tray=f"{peer.name} went offline", tone="idle"
+            )
+
+    # ----------------------------------------------------------------- state
+
+    def _set_state(
+        self,
+        kind: str,
+        peer: str | None = None,
+        file: str | None = None,
+        tray: str | None = None,
+        tone: str | None = None,
+    ) -> None:
+        """Say the same thing in the tray and in the window.
+
+        They describe one moment, so they are set together. Letting each be
+        updated at its own call site is how they drift, and a tray that says
+        "Ready" beside a window that says "Looking for your phone" is worse
+        than either alone.
+        """
+        self._state = (kind, peer, file)
+
+        from airgrab.ui.window import describe
+
+        _, state_tone, headline, detail = describe(kind, peer, file)
+        self._tray.set_status(
+            tray if tray is not None else (f"{headline} — {detail}" if detail else headline),
+            tone or {"good": "connected", "warn": "problem"}.get(state_tone, "idle"),
+        )
+        self._refresh_window()
+
+    def _refresh_window(self) -> None:
+        kind, peer, file = self._state
+        devices = tuple(
+            Device(
+                fingerprint=found.fingerprint,
+                name=found.name,
+                host=found.host,
+                paired=self._node.trust.is_trusted(found.fingerprint),
+            )
+            for found in self._peers.values()
+        )
+        self._window.update(
+            Snapshot(
+                kind=kind,
+                peer=peer,
+                file=file,
+                outgoing_note="taken when you make a fist",
+                devices=devices,
+                arrivals=tuple(self._arrivals),
+            )
+        )
 
     # -------------------------------------------------------------- feedback
 
@@ -252,43 +352,62 @@ class AirGrabApp:
         Without this the gesture feels broken while it is working perfectly:
         there is no other signal that a grab was registered.
         """
+        peer = self._first_peer_name()
         if event.type is EventType.ARMED:
-            self._tray.set_status("Ready — close your fist to grab", "connected")
+            self._set_state("ready", peer=peer)
         elif event.type is EventType.GRABBED:
-            self._tray.set_status("Holding — open your hand at the other device",
-                                  "connected")
+            self._set_state("holding", peer=peer)
             self._overlay.show("holding", "Holding — open your hand at the other device")
         elif event.type is EventType.CATCH_READY:
-            self._tray.set_status("Incoming — open your hand to receive", "connected")
+            self._set_state("incoming", peer=peer)
             self._overlay.show("holding", "Open your hand to receive")
         elif event.type is EventType.CANCELLED:
-            self._tray.set_status("Grab expired", "idle")
+            self._set_state("expired", peer=peer, tone="idle")
             self._tray.notify("Grab expired — nothing was sent.")
             self._overlay.show("cancelled", "Grab expired — nothing was sent")
         elif event.type is EventType.DISARMED:
-            self._tray.set_status("Ready", "connected" if self._peers else "idle")
+            self._set_state("ready" if self._peers else "looking", peer=peer)
+
+    def _first_peer_name(self) -> str | None:
+        """The device a sentence should name.
+
+        Prefers a paired one: an unpaired device is visible but cannot receive
+        anything, so telling the user to open their palm at it would send them
+        to the wrong machine.
+        """
+        for peer in self._peers.values():
+            if self._node.trust.is_trusted(peer.fingerprint):
+                return peer.name
+        return next((peer.name for peer in self._peers.values()), None)
 
     def _on_transfer_finished(self, peer_fp: str, ok: bool) -> None:
         peer = self._peers.get(peer_fp)
         name = peer.name if peer else "the other device"
         if ok:
             self._tray.notify(f"Sent to {name}")
-            self._tray.set_status(f"Ready — connected to {name}", "connected")
+            self._set_state("sent", peer=name)
             self._overlay.show("sent", f"Sent to {name}")
         else:
             self._tray.notify(f"Could not send to {name}")
-            self._tray.set_status("Send failed", "problem")
+            self._set_state("send_failed", peer=name)
             self._overlay.show("cancelled", f"Could not send to {name}")
 
     def _on_camera_stopped(self, reason: str) -> None:
         self._camera_ready = False
         if reason != "stopped":
             self._tray.notify(f"Gestures stopped: {reason}")
-            self._tray.set_status("Gestures unavailable", "problem")
+            self._set_state("gestures_off", tray=f"Gestures stopped: {reason}")
 
     def _on_file_received(self, path: Path) -> None:
         self._log.info("received %s", path.name)
+        size = path.stat().st_size if path.exists() else 0
+        self._arrivals.insert(
+            0, Arrival(name=path.name, size=size, when=time.strftime("%H:%M"))
+        )
+        del self._arrivals[KEPT_ARRIVALS:]
+
         self._tray.notify(f"Received {path.name}")
+        self._set_state("received", peer=self._first_peer_name(), file=path.name)
         self._overlay.show("received", f"Received {path.name}")
 
     # ---------------------------------------------------------- user actions
@@ -298,14 +417,22 @@ class AirGrabApp:
         os.startfile(str(self._settings.download_dir))  # noqa: S606 - Windows only
 
     def _open_settings(self) -> None:
-        """Opened from the tray thread, which is where tkinter must run.
+        """Opened on the Tk thread, parented to the hidden root.
+
+        It used to build a Tk root of its own from whichever thread the tray
+        menu ran on. A second Tk in a second thread is the same mistake that
+        made the pairing dialog invisible: it does not raise, it just may
+        never paint.
 
         Most settings only take effect on restart, which the window says
         itself; nothing here tries to apply them live.
         """
-        from airgrab.ui.settings import open_settings_window
+        from airgrab.ui.settings import SettingsWindow
 
-        saved = open_settings_window(self._data_dir / "settings.json")
+        path = self._data_dir / "settings.json"
+        saved = self._shell.call(
+            lambda: SettingsWindow(path).show(parent=self._shell.root)
+        )
         if saved is not None:
             self._tray.notify("Settings saved. Restart AirGrab to apply them.")
 
@@ -320,8 +447,15 @@ class AirGrabApp:
                 "No unpaired devices found. Make sure both are on the same Wi-Fi."
             )
             return
+        self._pair_with(unpaired[0].fingerprint)
 
-        peer = unpaired[0]
+    def _pair_with(self, fingerprint: str) -> None:
+        """Pair with one named device, chosen in the window."""
+        peer = self._peers.get(fingerprint)
+        if peer is None:
+            self._tray.notify("That device is no longer visible.")
+            return
+
         future = asyncio.run_coroutine_threadsafe(
             self._node.pair_with(peer.host, peer.port, on_sas=self._confirm_sas),
             self._loop,
@@ -336,6 +470,7 @@ class AirGrabApp:
             if granted:
                 self._tray.notify(f"Paired with {peer.name}")
                 self._on_peer_found(peer)  # link immediately now that it is trusted
+                self._refresh_window()     # the chip says Paired straight away
             else:
                 self._tray.notify("Pairing cancelled")
 

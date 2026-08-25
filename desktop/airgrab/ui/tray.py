@@ -37,6 +37,7 @@ class Tray:
         on_pair: Callable[[], None],
         on_quit: Callable[[], None],
         on_settings: Callable[[], None] | None = None,
+        on_open_window: Callable[[], None] | None = None,
     ) -> None:
         self._status = "Starting..."
         self._icon = pystray.Icon(
@@ -46,6 +47,14 @@ class Tray:
             menu=pystray.Menu(
                 pystray.MenuItem(lambda item: self._status, None, enabled=False),
                 pystray.Menu.SEPARATOR,
+                # default=True makes this the double-click action, which is
+                # what a user does to a tray icon before reading any menu.
+                pystray.MenuItem(
+                    "Open AirGrab",
+                    lambda: on_open_window() if on_open_window else None,
+                    default=on_open_window is not None,
+                    visible=on_open_window is not None,
+                ),
                 pystray.MenuItem("Pair a device...", lambda: on_pair()),
                 pystray.MenuItem("Open received files", lambda: on_open_downloads()),
                 pystray.MenuItem(
