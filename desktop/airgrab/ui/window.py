@@ -269,7 +269,13 @@ class _Pill:
         try:
             self.command()
         except Exception:
-            pass  # a failing action must not take the window with it
+            # A failing action must not take the window with it -- but a
+            # swallowed one must leave a trace. This exact handler ate the
+            # Settings deadlock guard, and the symptom was a button that
+            # "did nothing" with no evidence anywhere.
+            import logging
+
+            logging.getLogger("airgrab").exception("a button action failed")
 
     def pack(self, **kwargs) -> None:
         self.canvas.pack(**kwargs)
@@ -287,6 +293,15 @@ class MainWindow:
         self._cards: dict[str, _Card] = {}
         self._last: Snapshot | None = None
         self._pending = Snapshot()
+
+        # The hero badge's animation. One after-loop, owned by the Tk thread;
+        # _render_state retargets or stops it as the state changes.
+        self._anim_job = None
+        self._anim_canvas = None
+        self._anim_rings: list = []
+        self._anim_phase = 0.0
+        self._anim_burst = 0  # ripples left in a one-shot burst, 0 = continuous
+        self._last_kind: str | None = None
 
     # ------------------------------------------------------------ public API
 
@@ -525,6 +540,86 @@ class MainWindow:
             wrapped.pack(fill="x", pady=(12, 4))
 
         card.refresh()
+        self._retarget_animation(snapshot.kind, badge, colour, ground)
+
+    # ------------------------------------------------------------- animation
+
+    # States that mean "actively looking": the badge pulses like a radar so
+    # the card reads as searching rather than stuck. A still screen and a
+    # frozen screen are indistinguishable, and this app has genuinely been
+    # both in front of its user.
+    PULSING = frozenset({"starting", "looking", "unpaired", "holding", "incoming"})
+
+    def _retarget_animation(self, kind: str, badge, colour: str, ground: str) -> None:
+        """Called by _render_state, on the Tk thread, after every redraw."""
+        root = self._shell.root
+        if root is None:
+            return
+        if self._anim_job is not None:
+            try:
+                root.after_cancel(self._anim_job)
+            except Exception:
+                pass
+            self._anim_job = None
+
+        arrived = self._last_kind in self.PULSING and kind == "ready"
+        self._last_kind = kind
+
+        self._anim_canvas = badge
+        self._anim_colour = colour
+        self._anim_ground = ground
+        self._anim_rings = []
+        self._anim_phase = 0.0
+
+        if kind in self.PULSING:
+            self._anim_burst = 0          # pulse until told otherwise
+            self._tick_animation()
+        elif arrived:
+            self._anim_burst = 2          # a short greeting, then stillness
+            self._tick_animation()
+
+    def _tick_animation(self) -> None:
+        """One frame: a ring grows out of the badge and fades as it goes.
+
+        Everything is wrapped against TclError because the canvas being drawn
+        on is destroyed by the next render; the frame after that must simply
+        stop, not take the drain loop with it.
+        """
+        root, canvas = self._shell.root, self._anim_canvas
+        if root is None or canvas is None:
+            return
+        try:
+            if not canvas.winfo_exists():
+                return
+
+            self._anim_phase += 0.04
+            if self._anim_phase >= 1.0:
+                self._anim_phase = 0.0
+                if self._anim_burst > 0:
+                    self._anim_burst -= 1
+                    if self._anim_burst == 0:
+                        for ring in self._anim_rings:
+                            canvas.delete(ring)
+                        self._anim_rings = []
+                        self._anim_job = None
+                        return
+
+            for ring in self._anim_rings:
+                canvas.delete(ring)
+
+            # Radius grows with the phase; presence fades against the card's
+            # ground, because Tk has no real alpha to fade with.
+            radius = 12.0 + self._anim_phase * 15.0
+            strength = max(0.0, 0.55 * (1.0 - self._anim_phase))
+            shade = style.wash(self._anim_colour, self._anim_ground, strength)
+            self._anim_rings = [canvas.create_oval(
+                28 - radius, 28 - radius, 28 + radius, 28 + radius,
+                outline=shade, width=2,
+            )]
+
+            self._anim_job = root.after(40, self._tick_animation)
+        except Exception:
+            self._anim_job = None
 
     def _render_outgoing(self, snapshot: Snapshot) -> None:
         import tkinter

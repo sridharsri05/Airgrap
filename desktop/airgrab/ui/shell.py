@@ -100,7 +100,13 @@ class Shell:
         if self._thread is None or self._failed:
             return None
         if threading.current_thread() is self._thread:
-            raise RuntimeError("Shell.call from the Tk thread would deadlock")
+            # Already on the Tk thread: run it here and now. This is not a
+            # degenerate case -- a button in the window is clicked ON this
+            # thread, so the settings dialog arrives exactly this way. The
+            # first version raised here instead, and the pill's click handler
+            # swallowed the error, which came out as "the Settings button
+            # does nothing" with no trace anywhere.
+            return function()
 
         done: queue.Queue = queue.Queue(maxsize=1)
 
