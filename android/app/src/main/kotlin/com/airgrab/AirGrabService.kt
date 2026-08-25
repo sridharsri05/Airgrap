@@ -116,6 +116,19 @@ class AirGrabService : LifecycleService() {
     /** The most recent gesture events, newest first. */
     val recentEvents = ArrayDeque<String>()
 
+    /** A file that arrived, kept so the screen can say where it went. */
+    data class Arrival(val file: File, val size: Long, val at: Long)
+
+    /**
+     * Files received this run, newest first.
+     *
+     * The app otherwise forgets every transfer the moment its notification is
+     * dismissed, which leaves the user with a file somewhere on their phone
+     * and no way to find out where. Capped, and deliberately not persisted:
+     * this is a record of what just happened, not a file manager.
+     */
+    val received = ArrayDeque<Arrival>()
+
     /** The last thing that happened, for the screen and the notification. */
     @Volatile
     var activity: String = "Ready"
@@ -199,6 +212,10 @@ class AirGrabService : LifecycleService() {
             // is not paired.
             started.onIncomingFile = { file ->
                 activity = "Received ${file.name}"
+                synchronized(received) {
+                    received.addFirst(Arrival(file, file.length(), System.currentTimeMillis()))
+                    while (received.size > 20) received.removeLast()
+                }
                 Haptics.received(this)
                 overlay.show(GestureOverlay.Kind.RECEIVED, file.name)
                 updateStatus()
@@ -440,6 +457,6 @@ class AirGrabService : LifecycleService() {
      * partial file visible to the gallery, which is exactly what the transfer
      * layer goes to lengths to prevent.
      */
-    private fun downloadDirectory(): File =
+    fun downloadDirectory(): File =
         File(getExternalFilesDir(null) ?: filesDir, "AirGrab").apply { mkdirs() }
 }

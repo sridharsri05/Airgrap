@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Outline
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
@@ -28,6 +29,7 @@ import com.airgrab.core.DiscoveredPeer
 import com.airgrab.core.GestureState
 import com.airgrab.core.Pose
 import com.airgrab.ui.Style
+import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -41,24 +43,34 @@ private const val PICK_HINT =
  * The one screen.
  *
  * Ordered by what the user needs to know, not by how the app is built: what is
- * happening now, what a grab would send, which devices are around, and only
- * then the technical detail. The diagnostics stay — they are what makes a
- * gesture that did not work explainable rather than mysterious — but they sit
- * at the bottom, folded away.
+ * happening now, what a grab would send, which devices are around, what has
+ * arrived, and only then the technical detail. The diagnostics stay — they are
+ * what makes a gesture that did not work explainable rather than mysterious —
+ * but they sit at the bottom, folded away.
+ *
+ * The state card is deliberately the largest thing here. Everything else on
+ * this screen is a setting or a record; that card is the only part the user
+ * reads while actually using the app, usually at arm's length with one hand
+ * held up in front of the camera.
  */
 class MainActivity : AppCompatActivity() {
 
     private lateinit var root: LinearLayout
 
-    private lateinit var stateDot: View
+    private lateinit var stateBadge: TextView
     private lateinit var stateHeadline: TextView
     private lateinit var stateDetail: TextView
 
-    private lateinit var contentText: TextView
+    private lateinit var contentThumb: ImageView
+    private lateinit var contentName: TextView
+    private lateinit var contentMeta: TextView
     private lateinit var photoStrip: LinearLayout
     private lateinit var photoHint: TextView
-    private lateinit var devicesCard: LinearLayout
     private lateinit var devicesList: LinearLayout
+
+    private lateinit var receivedCard: LinearLayout
+    private lateinit var receivedList: LinearLayout
+    private lateinit var receivedWhere: TextView
 
     private lateinit var warningCard: LinearLayout
     private lateinit var warningText: TextView
@@ -71,6 +83,20 @@ class MainActivity : AppCompatActivity() {
 
     /** Peers already offered a pairing dialog, so it is not reopened each tick. */
     private val pairingInFlight = mutableSetOf<String>()
+
+    /** The file the thumbnail currently shows, so it is decoded only on change. */
+    private var thumbnailFor: String? = null
+
+    /**
+     * The newest photo, as of the last time the strip was built.
+     *
+     * Held rather than queried in [render]: that runs four times a second, and
+     * a MediaStore query is a database read the main thread should not be
+     * doing at all, let alone at that rate. Refreshed on resume, which is
+     * exactly when a new photo can have appeared.
+     */
+    @Volatile
+    private var latestPhoto: PhotoLibrary.Photo? = null
 
     /**
      * Both permissions in one request.
@@ -157,94 +183,18 @@ class MainActivity : AppCompatActivity() {
     private fun buildLayout(): ScrollView {
         val pad = Style.dp(this, 20)
 
-        stateDot = Style.dot(this, Style.muted(this))
-        stateHeadline = Style.headline(this, "Starting")
-        stateDetail = Style.body(this, "")
-
-        val stateCard = Style.card(this).apply {
-            addView(Style.row(this@MainActivity).apply {
-                addView(stateDot)
-                addView(Style.title(this@MainActivity, "AIRGRAB"))
-            })
-            addView(stateHeadline)
-            addView(stateDetail)
-        }
-
-        contentText = Style.body(this, "Your most recent photo")
-        photoStrip = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        photoHint = Style.body(this, PICK_HINT)
-
-        val contentCard = Style.card(this).apply {
-            addView(Style.title(this@MainActivity, "READY TO SEND"))
-            addView(Style.spacer(this@MainActivity, 8))
-            addView(contentText)
-            addView(Style.spacer(this@MainActivity, 12))
-            addView(
-                HorizontalScrollView(this@MainActivity).apply {
-                    isHorizontalScrollBarEnabled = false
-                    addView(photoStrip)
-                }
-            )
-            addView(Style.spacer(this@MainActivity, 12))
-            addView(photoHint)
-        }
-
-        devicesList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        devicesCard = Style.card(this).apply {
-            addView(Style.title(this@MainActivity, "DEVICES"))
-            addView(Style.spacer(this@MainActivity, 8))
-            addView(devicesList)
-        }
-
-        warningText = Style.body(this, "", Style.warn(this))
-        val fixButton = plainButton("Open the setting") { openBackgroundSettings() }
-        warningCard = Style.card(this).apply {
-            visibility = View.GONE
-            addView(Style.title(this@MainActivity, "BACKGROUND ACCESS"))
-            addView(Style.spacer(this@MainActivity, 8))
-            addView(warningText)
-            addView(Style.spacer(this@MainActivity, 12))
-            addView(fixButton)
-        }
-
-        overlayCard = Style.card(this).apply {
-            visibility = View.GONE
-            addView(Style.title(this@MainActivity, "ON-SCREEN FEEDBACK"))
-            addView(Style.spacer(this@MainActivity, 8))
-            addView(
-                Style.body(
-                    this@MainActivity,
-                    "Show what a gesture did on top of whatever you are using, " +
-                        "so you know it worked without opening AirGrab.",
-                )
-            )
-            addView(Style.spacer(this@MainActivity, 12))
-            addView(plainButton("Allow") { requestOverlayPermission() })
-        }
-
-        diagnosticsText = Style.mono(this, "").apply { visibility = View.GONE }
-        diagnosticsToggle = plainButton("Show details") { toggleDiagnostics() }
-        val diagnosticsCard = Style.card(this).apply {
-            addView(diagnosticsToggle)
-            addView(diagnosticsText)
-        }
-
-        val stopButton = plainButton("Stop AirGrab") {
-            AirGrabService.stop(this)
-            Toast.makeText(this, "Stopped", Toast.LENGTH_SHORT).show()
-        }
-
         root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Style.background(this@MainActivity))
-            setPadding(pad, Style.dp(this@MainActivity, 32), pad, pad)
-            addView(stateCard)
-            addView(contentCard)
-            addView(devicesCard)
-            addView(overlayCard)
-            addView(warningCard)
-            addView(diagnosticsCard)
-            addView(stopButton)
+            setPadding(pad, Style.dp(this@MainActivity, 28), pad, pad)
+            addView(stateCard())
+            addView(contentCard())
+            addView(devicesCard())
+            addView(receivedCard())
+            addView(overlayCard())
+            addView(warningCard())
+            addView(diagnosticsCard())
+            addView(footer())
         }
 
         return ScrollView(this).apply {
@@ -253,23 +203,219 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun plainButton(label: String, onClick: () -> Unit): Button =
+    /**
+     * The hand, and one sentence.
+     *
+     * Huawei's own gesture UI answers exactly one question — is it watching me,
+     * and did it see that — and answers it with a hand at the top of the
+     * screen. The sentence underneath says what to do next rather than naming
+     * an internal state, because "Connected" tells the user nothing they can
+     * act on and "Open your palm at your PC" tells them everything.
+     */
+    private fun stateCard(): LinearLayout {
+        stateBadge = Style.glyphBadge(this, "•", Style.muted(this))
+        stateHeadline = Style.headline(this, "Starting")
+        stateDetail = Style.body(this, "Setting up the link.")
+
+        return Style.card(this).apply {
+            addView(Style.title(this@MainActivity, "AIRGRAB"))
+            addView(Style.spacer(this@MainActivity, 16))
+            addView(Style.row(this@MainActivity).apply {
+                addView(stateBadge)
+                addView(LinearLayout(this@MainActivity).apply {
+                    orientation = LinearLayout.VERTICAL
+                    layoutParams = LinearLayout.LayoutParams(
+                        0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f
+                    )
+                    addView(stateHeadline)
+                })
+            })
+            addView(Style.spacer(this@MainActivity, 10))
+            addView(stateDetail)
+        }
+    }
+
+    /**
+     * What a fist would pick up, shown rather than named.
+     *
+     * A filename is a claim; the picture is proof. The whole failure this
+     * guards against is grabbing confidently and sending the wrong photo,
+     * which is invisible until it lands on the PC.
+     */
+    private fun contentCard(): LinearLayout {
+        contentThumb = squareImage(Style.dp(this, 64))
+        contentName = Style.body(this, "Nothing selected", Style.text(this)).apply {
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
+        }
+        contentMeta = Style.mono(this, "")
+        photoStrip = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        photoHint = Style.body(this, PICK_HINT)
+
+        return Style.card(this).apply {
+            addView(Style.title(this@MainActivity, "READY TO SEND"))
+            addView(Style.spacer(this@MainActivity, 14))
+            addView(Style.row(this@MainActivity).apply {
+                addView(contentThumb)
+                addView(LinearLayout(this@MainActivity).apply {
+                    orientation = LinearLayout.VERTICAL
+                    layoutParams = LinearLayout.LayoutParams(
+                        0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f
+                    ).apply { leftMargin = Style.dp(this@MainActivity, 14) }
+                    addView(contentName)
+                    addView(contentMeta)
+                })
+            })
+            addView(Style.spacer(this@MainActivity, 16))
+            addView(
+                HorizontalScrollView(this@MainActivity).apply {
+                    isHorizontalScrollBarEnabled = false
+                    addView(photoStrip)
+                }
+            )
+            addView(Style.spacer(this@MainActivity, 14))
+            addView(photoHint)
+        }
+    }
+
+    private fun devicesCard(): LinearLayout {
+        devicesList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        return Style.card(this).apply {
+            addView(Style.title(this@MainActivity, "DEVICES"))
+            addView(Style.spacer(this@MainActivity, 14))
+            addView(devicesList)
+        }
+    }
+
+    private fun receivedCard(): LinearLayout {
+        receivedList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        receivedWhere = Style.mono(this, "")
+        receivedCard = Style.card(this).apply {
+            visibility = View.GONE
+            addView(Style.title(this@MainActivity, "ARRIVED"))
+            addView(Style.spacer(this@MainActivity, 14))
+            addView(receivedList)
+            addView(Style.spacer(this@MainActivity, 12))
+            addView(receivedWhere)
+        }
+        return receivedCard
+    }
+
+    private fun overlayCard(): LinearLayout {
+        overlayCard = Style.card(this).apply {
+            visibility = View.GONE
+            addView(Style.title(this@MainActivity, "ON-SCREEN FEEDBACK"))
+            addView(Style.spacer(this@MainActivity, 10))
+            addView(
+                Style.body(
+                    this@MainActivity,
+                    "Show what a gesture did on top of whatever you are using, " +
+                        "so you know it worked without opening AirGrab.",
+                )
+            )
+            addView(Style.spacer(this@MainActivity, 14))
+            addView(accentButton("Allow") { requestOverlayPermission() })
+        }
+        return overlayCard
+    }
+
+    private fun warningCard(): LinearLayout {
+        warningText = Style.body(this, "", Style.warn(this))
+        warningCard = Style.card(this).apply {
+            visibility = View.GONE
+            addView(Style.title(this@MainActivity, "BACKGROUND ACCESS"))
+            addView(Style.spacer(this@MainActivity, 10))
+            addView(warningText)
+            addView(Style.spacer(this@MainActivity, 14))
+            addView(accentButton("Open the setting") { openBackgroundSettings() })
+        }
+        return warningCard
+    }
+
+    private fun diagnosticsCard(): LinearLayout {
+        diagnosticsText = Style.mono(this, "").apply { visibility = View.GONE }
+        diagnosticsToggle = quietButton("Show details") { toggleDiagnostics() }
+        return Style.card(this).apply {
+            addView(diagnosticsToggle)
+            addView(diagnosticsText)
+        }
+    }
+
+    /**
+     * Stopping the app is not part of using it.
+     *
+     * It sat directly under the gesture controls and got pressed by accident
+     * mid-test, which stops the service and makes the phone vanish from the
+     * PC with no obvious connection to the tap that caused it. Down here, in
+     * the quiet weight, it is still one tap away and no longer in the path of
+     * anything else.
+     */
+    private fun footer(): LinearLayout = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(0, Style.dp(this@MainActivity, 8), 0, Style.dp(this@MainActivity, 24))
+        addView(quietButton("Stop AirGrab") {
+            AirGrabService.stop(this@MainActivity)
+            Toast.makeText(this@MainActivity, "Stopped", Toast.LENGTH_SHORT).show()
+        })
+    }
+
+    // ---------------------------------------------------------------- controls
+
+    /** The one filled control on screen at a time: the thing to do next. */
+    private fun accentButton(label: String, onClick: () -> Unit): Button =
+        Button(this).apply {
+            text = label
+            isAllCaps = false
+            textSize = 15f
+            setTextColor(if (Style.dark(this@MainActivity)) 0xFF0D0D0D.toInt() else 0xFFFFFFFF.toInt())
+            background = GradientDrawable().apply {
+                cornerRadius = Style.dp(this@MainActivity, 100).toFloat()
+                setColor(Style.accent(this@MainActivity))
+            }
+            stateListAnimator = null
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                Style.dp(this@MainActivity, 46),
+            )
+            setOnClickListener { onClick() }
+        }
+
+    /** Everything else: a label the colour of the accent, on the card itself. */
+    private fun quietButton(label: String, onClick: () -> Unit): Button =
         Button(this).apply {
             text = label
             isAllCaps = false
             textSize = 15f
             setTextColor(Style.accent(this@MainActivity))
             background = GradientDrawable().apply {
-                cornerRadius = Style.dp(this@MainActivity, 10).toFloat()
-                setColor(Style.background(this@MainActivity))
-                setStroke(Style.dp(this@MainActivity, 1), Style.divider(this@MainActivity))
+                cornerRadius = Style.dp(this@MainActivity, 100).toFloat()
+                setColor(Style.wash(this@MainActivity, Style.accent(this@MainActivity)))
             }
+            stateListAnimator = null
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Style.dp(this@MainActivity, 44),
             )
             setOnClickListener { onClick() }
         }
+
+    private fun squareImage(edge: Int): ImageView {
+        val radius = Style.dp(this, 14).toFloat()
+        return ImageView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(edge, edge)
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            background = GradientDrawable().apply {
+                cornerRadius = radius
+                setColor(Style.raised(this@MainActivity))
+            }
+            clipToOutline = true
+            outlineProvider = object : ViewOutlineProvider() {
+                override fun getOutline(view: View, outline: Outline) {
+                    outline.setRoundRect(0, 0, view.width, view.height, radius)
+                }
+            }
+        }
+    }
 
     private fun toggleDiagnostics() {
         diagnosticsOpen = !diagnosticsOpen
@@ -293,53 +439,123 @@ class MainActivity : AppCompatActivity() {
         val node = service?.node
 
         when {
-            service == null || node == null -> {
-                stateDot.setBackgroundColourOf(Style.muted(this))
-                stateHeadline.text = "Starting"
-                stateDetail.text = "Setting up the link."
-            }
+            service == null || node == null ->
+                setState("•", Style.muted(this), "Starting", "Setting up the link.")
 
-            service.stateMachine.state == GestureState.HOLDING -> {
-                stateDot.setBackgroundColourOf(Style.accent(this))
-                stateHeadline.text = "Holding"
-                stateDetail.text = "Open your palm at the other device to drop it."
-            }
+            service.stateMachine.state == GestureState.HOLDING ->
+                setState(
+                    "✊", Style.accent(this), "Holding",
+                    "Open your palm at the other device to drop it.",
+                )
 
-            service.activity != "Ready" -> {
-                stateDot.setBackgroundColourOf(Style.accent(this))
-                stateHeadline.text = service.activity
-                stateDetail.text = ""
-            }
+            service.activity != "Ready" ->
+                setState("✓", Style.good(this), service.activity, "")
 
-            service.peers.isEmpty() -> {
-                stateDot.setBackgroundColourOf(Style.warn(this))
-                stateHeadline.text = "Looking for your PC"
-                stateDetail.text =
-                    "Both devices need the same Wi-Fi, with AirGrab running on the PC."
-            }
+            service.peers.isEmpty() ->
+                setState(
+                    "◌", Style.warn(this), "Looking for your PC",
+                    "Both devices need the same Wi-Fi, with AirGrab running on the PC.",
+                )
 
             else -> {
                 val paired = service.peers.count { node.trust.isTrusted(it.fingerprint) }
-                stateDot.setBackgroundColourOf(
-                    if (paired > 0) Style.good(this) else Style.warn(this)
-                )
-                stateHeadline.text = if (paired > 0) "Ready" else "Pair to continue"
-                stateDetail.text = if (paired > 0) {
-                    "Make a fist to pick something up."
+                if (paired > 0) {
+                    val where = service.peers
+                        .firstOrNull { node.trust.isTrusted(it.fingerprint) }?.name
+                    setState(
+                        "🖐", Style.good(this), "Ready",
+                        "Make a fist to pick something up" +
+                            (where?.let { ", then open your palm at $it." } ?: "."),
+                    )
                 } else {
-                    "A device is nearby but not paired yet."
+                    setState(
+                        "◌", Style.warn(this), "Pair to continue",
+                        "A device is nearby but not paired yet.",
+                    )
                 }
             }
         }
 
-        contentText.text = PendingContent.current()?.let {
-            "${it.name}  (${humanSize(it.length())})"
-        } ?: PhotoLibrary.latest(this)?.let {
-            "${it.name}  (${humanSize(it.size)})  - your latest photo"
-        } ?: "Nothing selected"
-
+        renderContent()
         renderDevices(service, node)
+        renderReceived(service)
         renderDiagnostics(service, node)
+    }
+
+    private fun setState(glyph: String, colour: Int, headline: String, detail: String) {
+        stateBadge.text = glyph
+        (stateBadge.background as? GradientDrawable)?.setColor(Style.wash(this, colour))
+        stateHeadline.text = headline
+        stateDetail.text = detail
+        stateDetail.visibility = if (detail.isEmpty()) View.GONE else View.VISIBLE
+    }
+
+    private fun renderContent() {
+        val held = PendingContent.current()
+        val latest = if (held == null) latestPhoto else null
+
+        val name = held?.name ?: latest?.name
+        val size = held?.length() ?: latest?.size
+        val source = when {
+            held != null -> "chosen"
+            latest != null -> "your latest photo"
+            else -> null
+        }
+
+        contentName.text = name ?: "Nothing selected"
+        contentMeta.text = if (name == null) {
+            "Take a photo, or share a file to AirGrab"
+        } else {
+            "${humanSize(size ?: 0)}  ·  $source"
+        }
+
+        // Decoded only when the file changes: this runs four times a second.
+        val key = held?.absolutePath ?: latest?.uri?.toString()
+        if (key != thumbnailFor) {
+            thumbnailFor = key
+            showThumbnail(held, latest)
+        }
+    }
+
+    private fun showThumbnail(held: File?, latest: PhotoLibrary.Photo?) {
+        contentThumb.setImageDrawable(null)
+        val edge = Style.dp(this, 64)
+
+        lifecycleScope.launch(Dispatchers.IO) {
+            val bitmap = when {
+                held != null -> decodeThumbnail(held, edge)
+                latest != null -> PhotoLibrary.thumbnail(this@MainActivity, latest, edge)
+                else -> null
+            }
+            runOnUiThread { if (bitmap != null) contentThumb.setImageBitmap(bitmap) }
+        }
+    }
+
+    /**
+     * A thumbnail for a file the app is holding.
+     *
+     * Returns null for anything that is not an image — a shared PDF or video
+     * has no picture to show, and an empty tile is a truthful answer to that.
+     * Sampled rather than fully decoded: a 50-megapixel photo decoded at full
+     * size to fill 64dp is how a gallery runs out of memory.
+     */
+    private fun decodeThumbnail(file: File, edge: Int): Bitmap? {
+        return runCatching {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(file.absolutePath, bounds)
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+
+            var sample = 1
+            while (bounds.outWidth / (sample * 2) >= edge &&
+                bounds.outHeight / (sample * 2) >= edge
+            ) {
+                sample *= 2
+            }
+            BitmapFactory.decodeFile(
+                file.absolutePath,
+                BitmapFactory.Options().apply { inSampleSize = sample },
+            )
+        }.getOrNull()
     }
 
     private fun renderDevices(service: AirGrabService?, node: com.airgrab.core.Node?) {
@@ -351,27 +567,71 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        peers.forEach { peer ->
+        peers.forEachIndexed { index, peer ->
             val trusted = node.trust.isTrusted(peer.fingerprint)
             devicesList.addView(Style.row(this).apply {
-                addView(Style.dot(this@MainActivity,
-                    if (trusted) Style.good(this@MainActivity) else Style.warn(this@MainActivity)))
                 addView(LinearLayout(this@MainActivity).apply {
                     orientation = LinearLayout.VERTICAL
-                    layoutParams = LinearLayout.LayoutParams(0,
-                        ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-                    addView(Style.body(this@MainActivity, peer.name,
-                        Style.text(this@MainActivity)))
-                    addView(Style.mono(this@MainActivity,
-                        "${peer.host}  ${if (trusted) "paired" else "not paired"}"))
+                    layoutParams = LinearLayout.LayoutParams(
+                        0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f
+                    )
+                    addView(Style.body(this@MainActivity, peer.name, Style.text(this@MainActivity)))
+                    addView(Style.mono(this@MainActivity, peer.host))
                 })
+                addView(
+                    Style.chip(
+                        this@MainActivity,
+                        if (trusted) "Paired" else "Not paired",
+                        if (trusted) Style.good(this@MainActivity) else Style.warn(this@MainActivity),
+                    )
+                )
             })
 
             if (!trusted) {
-                devicesList.addView(plainButton("Pair with ${peer.name}") { pairWith(peer) })
+                devicesList.addView(Style.spacer(this, 12))
+                devicesList.addView(accentButton("Pair with ${peer.name}") { pairWith(peer) })
             }
-            devicesList.addView(Style.spacer(this, 12))
+            if (index != peers.lastIndex) devicesList.addView(Style.spacer(this, 16))
         }
+    }
+
+    private fun renderReceived(service: AirGrabService?) {
+        val arrivals = service?.received?.let { synchronized(it) { it.toList() } }.orEmpty()
+        if (arrivals.isEmpty()) {
+            receivedCard.visibility = View.GONE
+            return
+        }
+
+        receivedCard.visibility = View.VISIBLE
+        receivedList.removeAllViews()
+        arrivals.take(5).forEachIndexed { index, arrival ->
+            receivedList.addView(Style.row(this).apply {
+                addView(LinearLayout(this@MainActivity).apply {
+                    orientation = LinearLayout.VERTICAL
+                    layoutParams = LinearLayout.LayoutParams(
+                        0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f
+                    )
+                    addView(
+                        Style.body(
+                            this@MainActivity, arrival.file.name, Style.text(this@MainActivity)
+                        ).apply {
+                            maxLines = 1
+                            ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
+                        }
+                    )
+                    addView(
+                        Style.mono(
+                            this@MainActivity,
+                            "${humanSize(arrival.size)}  ·  ${clockTime(arrival.at)}",
+                        )
+                    )
+                })
+            })
+            if (index != minOf(arrivals.size, 5) - 1) receivedList.addView(Style.spacer(this, 14))
+        }
+
+        receivedWhere.text = "Saved in ${service?.downloadDirectory()?.name ?: "AirGrab"}, " +
+            "under Files › Internal storage › Android › data"
     }
 
     private fun renderDiagnostics(service: AirGrabService?, node: com.airgrab.core.Node?) {
@@ -379,6 +639,7 @@ class MainActivity : AppCompatActivity() {
 
         val (seen, classified) = service?.cameraStats() ?: (0L to 0L)
         diagnosticsText.text = buildString {
+            appendLine()
             appendLine("hand      ${service?.livePose ?: Pose.NONE}")
             appendLine("gesture   ${service?.stateMachine?.state}")
             appendLine("frames    $classified of $seen")
@@ -409,9 +670,8 @@ class MainActivity : AppCompatActivity() {
         else -> "$bytes bytes"
     }
 
-    private fun View.setBackgroundColourOf(colour: Int) {
-        (background as? GradientDrawable)?.setColor(colour)
-    }
+    private fun clockTime(millis: Long): String =
+        android.text.format.DateFormat.getTimeFormat(this).format(java.util.Date(millis))
 
     // ------------------------------------------------------------------ share
 
@@ -444,7 +704,7 @@ class MainActivity : AppCompatActivity() {
         if (!PhotoLibrary.permitted(this)) {
             photoHint.text = "Allow access to your photos to send them with a gesture."
             photoStrip.addView(
-                plainButton("Allow photos") {
+                accentButton("Allow photos") {
                     requestPermissions.launch(arrayOf(PhotoLibrary.permission))
                 }
             )
@@ -456,6 +716,7 @@ class MainActivity : AppCompatActivity() {
 
         lifecycleScope.launch(Dispatchers.IO) {
             val photos = PhotoLibrary.recent(this@MainActivity, limit = 12)
+            latestPhoto = photos.firstOrNull()
             val thumbnails = photos.map {
                 it to PhotoLibrary.thumbnail(this@MainActivity, it, edge)
             }
@@ -476,26 +737,12 @@ class MainActivity : AppCompatActivity() {
         photo: PhotoLibrary.Photo,
         bitmap: Bitmap?,
         edge: Int,
-    ): ImageView {
-        val radius = Style.dp(this, 10).toFloat()
-        return ImageView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(edge, edge).apply {
-                rightMargin = Style.dp(this@MainActivity, 8)
-            }
-            scaleType = ImageView.ScaleType.CENTER_CROP
-            background = GradientDrawable().apply {
-                cornerRadius = radius
-                setColor(Style.divider(this@MainActivity))
-            }
-            clipToOutline = true
-            outlineProvider = object : ViewOutlineProvider() {
-                override fun getOutline(view: View, outline: Outline) {
-                    outline.setRoundRect(0, 0, view.width, view.height, radius)
-                }
-            }
-            if (bitmap != null) setImageBitmap(bitmap)
-            setOnClickListener { choose(photo) }
+    ): ImageView = squareImage(edge).apply {
+        layoutParams = LinearLayout.LayoutParams(edge, edge).apply {
+            rightMargin = Style.dp(this@MainActivity, 8)
         }
+        if (bitmap != null) setImageBitmap(bitmap)
+        setOnClickListener { choose(photo) }
     }
 
     /** Copy the chosen photo into the outgoing slot, off the main thread. */
