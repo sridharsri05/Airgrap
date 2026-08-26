@@ -115,6 +115,18 @@ class GrabStateMachine:
         self._streak_started = 0.0
         self._held_since = 0.0
         self._refractory_pose: Pose | None = None
+        self._peer_holding = False
+
+    def set_peer_holding(self, value: bool) -> None:
+        """Told by the coordinator when a peer starts or ends a hold.
+
+        While a peer is holding, this device is a destination: an open palm
+        here means "give it to me", never "I am about to grab something".
+        Without this the receiving device armed on the palm it glimpsed as
+        the hand arrived, then read the closing fist as a brand-new grab --
+        and sent its own photo INTO the very hand trying to catch one.
+        """
+        self._peer_holding = value
 
     @property
     def state(self) -> State:
@@ -158,7 +170,14 @@ class GrabStateMachine:
 
         if self._state is State.IDLE:
             if self._streak_is(Pose.OPEN_PALM, self.config.arm_seconds, now):
-                events.append(self._transition(EventType.ARMED, State.ARMED, now))
+                if self._peer_holding:
+                    # The other device is holding: this palm is the catch.
+                    self._held_since = now
+                    events.append(
+                        self._transition(EventType.CATCH_READY, State.CATCHING, now)
+                    )
+                else:
+                    events.append(self._transition(EventType.ARMED, State.ARMED, now))
             elif self._streak_is(Pose.CLOSED_FIST, self.config.catch_seconds, now):
                 # A closed hand we never saw open: someone is arriving with
                 # something, so this device is the destination.
@@ -170,6 +189,14 @@ class GrabStateMachine:
 
         if self._state is State.ARMED:
             if self._streak_is(Pose.CLOSED_FIST, self.config.grab_seconds, now):
+                if self._peer_holding:
+                    # Armed before the peer's hold was announced, or a fist
+                    # made while a file is on offer: destination, not sender.
+                    self._held_since = now
+                    events.append(
+                        self._transition(EventType.CATCH_READY, State.CATCHING, now)
+                    )
+                    return events
                 self._held_since = now
                 events.append(self._transition(EventType.GRABBED, State.HOLDING, now))
             elif self._streak_is(Pose.NONE, self.config.disarm_seconds, now):

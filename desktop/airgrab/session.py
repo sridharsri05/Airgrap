@@ -68,6 +68,7 @@ class GestureSession:
     def forget_peer(self, peer_fp: str) -> None:
         self._addresses.pop(peer_fp, None)
         self.coordinator.peer_disconnected(peer_fp)
+        self.machine.set_peer_holding(bool(self.coordinator.peers_holding()))
 
     @property
     def captured(self) -> Path | None:
@@ -79,6 +80,9 @@ class GestureSession:
         """Feed one classified frame and carry out whatever it implies."""
         events = self.machine.observe(pose)
         events.extend(self.machine.tick())
+        # Expired peer holds are pruned inside the coordinator's tick, so the
+        # flag is refreshed here too, not only when a message arrives.
+        self.machine.set_peer_holding(bool(self.coordinator.peers_holding()))
         for event in events:
             if self.on_event is not None:
                 self.on_event(event)
@@ -89,6 +93,7 @@ class GestureSession:
         """Called from the control channel's reader, which is not a place we
         can await, so the resulting work is scheduled."""
         actions = self.coordinator.on_peer_message(peer_fp, message_type, payload)
+        self.machine.set_peer_holding(bool(self.coordinator.peers_holding()))
         if not actions:
             return
         task = asyncio.create_task(self._run(actions))

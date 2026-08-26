@@ -99,7 +99,20 @@ class GrabStateMachine(
         streakStarted = 0
         heldSince = 0
         refractoryPose = null
+        peerHolding = false
     }
+
+    /**
+     * Told by the coordinator when a peer starts or ends a hold.
+     *
+     * While a peer is holding, this device is a destination: an open palm
+     * here means "give it to me", never "I am about to grab something".
+     * Without this the receiving device armed on the palm it glimpsed as the
+     * hand arrived, then read the closing fist as a brand-new grab -- and
+     * sent its own photo INTO the very hand trying to catch one.
+     */
+    @Volatile
+    var peerHolding: Boolean = false
 
     /** Feed one classified frame; returns whatever it triggered. */
     fun observe(pose: Pose): List<GestureEvent> {
@@ -130,7 +143,13 @@ class GrabStateMachine(
         return when (state) {
             GestureState.IDLE -> when {
                 streakIs(Pose.OPEN_PALM, config.armMillis, now) ->
-                    listOf(transition(GestureEventType.ARMED, GestureState.ARMED, now))
+                    if (peerHolding) {
+                        // The other device is holding: this palm is the catch.
+                        heldSince = now
+                        listOf(transition(GestureEventType.CATCH_READY, GestureState.CATCHING, now))
+                    } else {
+                        listOf(transition(GestureEventType.ARMED, GestureState.ARMED, now))
+                    }
 
                 streakIs(Pose.CLOSED_FIST, config.catchMillis, now) -> {
                     heldSince = now
@@ -143,7 +162,14 @@ class GrabStateMachine(
             GestureState.ARMED -> when {
                 streakIs(Pose.CLOSED_FIST, config.grabMillis, now) -> {
                     heldSince = now
-                    listOf(transition(GestureEventType.GRABBED, GestureState.HOLDING, now))
+                    if (peerHolding) {
+                        // Armed before the peer's hold was announced, or a
+                        // fist made while a file is on offer: destination,
+                        // not sender.
+                        listOf(transition(GestureEventType.CATCH_READY, GestureState.CATCHING, now))
+                    } else {
+                        listOf(transition(GestureEventType.GRABBED, GestureState.HOLDING, now))
+                    }
                 }
 
                 streakIs(Pose.NONE, config.disarmMillis, now) ->

@@ -268,4 +268,40 @@ class GestureTest {
         feed(Pose.OPEN_PALM, 40) // held deliberately: ~1.3s
         assertEquals(GestureState.IDLE, slow.state)
     }
+
+    // ------------------------------------------------- peer-holding redirect
+
+    @Test
+    fun `a palm while a peer holds is a catch not an arm`() {
+        // The failure this encodes: PC holding, user shows the phone a palm,
+        // the phone ARMS, the closing fist GRABS, and the phone sends its
+        // own photo into the very hand trying to catch one.
+        val rig = Rig()
+        rig.machine.peerHolding = true
+
+        val events = rig.feed(Pose.OPEN_PALM, 5)
+        assertTrue(GestureEventType.CATCH_READY in types(events))
+        assertEquals(GestureState.CATCHING, rig.state)
+    }
+
+    @Test
+    fun `a palm with no peer holding still arms`() {
+        val rig = Rig()
+        val events = rig.feed(Pose.OPEN_PALM, 5)
+        assertTrue(GestureEventType.ARMED in types(events))
+    }
+
+    @Test
+    fun `an armed fist becomes a catch when the peer was already holding`() {
+        // Armed before the peer's hold was announced -- the announcement can
+        // arrive between two frames.
+        val rig = Rig()
+        rig.feed(Pose.OPEN_PALM, 5)
+        assertEquals(GestureState.ARMED, rig.state)
+
+        rig.machine.peerHolding = true
+        val events = rig.feed(Pose.CLOSED_FIST, 5)
+        assertTrue(GestureEventType.CATCH_READY in types(events))
+        assertEquals(GestureState.CATCHING, rig.state)
+    }
 }

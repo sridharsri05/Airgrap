@@ -250,6 +250,7 @@ class AirGrabService : LifecycleService() {
             val orchestrator = GestureOrchestrator(
                 node = started,
                 scope = scope,
+                machine = stateMachine,
                 peerLookup = { fingerprint -> discovery?.peers()?.firstOrNull { it.fingerprint == fingerprint } },
                 onContentWanted = {
                     // Shared something? Send exactly that — any file, any

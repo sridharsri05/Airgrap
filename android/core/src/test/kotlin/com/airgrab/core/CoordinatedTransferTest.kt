@@ -239,6 +239,15 @@ class CoordinatedTransferTest {
                 while (desktop.downloads.isEmpty()) delay(50)
             }
 
+            // The sender records the outcome only after the COMPLETE message
+            // comes back over the control channel, which is milliseconds
+            // AFTER the file is visible at the destination. Asserting the
+            // instant the download appeared lost that race roughly one run
+            // in ten.
+            withTimeout(10_000) {
+                while (phone.sent.isEmpty()) delay(50)
+            }
+
             // The fingerprint is pinned during the upload, so the file cannot
             // land anywhere but the device whose gesture asked for it.
             assertEquals(listOf("doc.txt:true"), phone.sent)

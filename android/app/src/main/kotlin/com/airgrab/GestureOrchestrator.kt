@@ -5,6 +5,7 @@ import com.airgrab.core.Action
 import com.airgrab.core.DiscoveredPeer
 import com.airgrab.core.GestureCoordinator
 import com.airgrab.core.GestureEvent
+import com.airgrab.core.GrabStateMachine
 import com.airgrab.core.Node
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
@@ -34,6 +35,9 @@ class GestureOrchestrator(
     private val peerLookup: (String) -> DiscoveredPeer?,
     private val onContentWanted: () -> File?,
     private val onStatus: (String) -> Unit = {},
+    /** The camera's state machine, told whenever a peer starts or ends a
+     *  hold so an arriving palm reads as a catch, not a fresh grab. */
+    private val machine: GrabStateMachine? = null,
 ) {
     companion object {
         const val TAG = "AirGrabGesture"
@@ -56,7 +60,10 @@ class GestureOrchestrator(
             // reads keys it knows, and nulls are dropped rather than trusted.
             val safe = payload.filterValues { it != null }.mapValues { it.value!! }
             Log.i(TAG, "peer gesture: $type from ${peerFp.take(16)}")
-            scope.launch { run(coordinator.onPeerMessage(peerFp, type, safe)) }
+            scope.launch {
+                run(coordinator.onPeerMessage(peerFp, type, safe))
+                machine?.peerHolding = coordinator.peersHolding().isNotEmpty()
+            }
         }
 
         scope.launch {
@@ -66,6 +73,9 @@ class GestureOrchestrator(
                 // forever and the next release on the PC sends a file the user
                 // grabbed twenty minutes ago.
                 run(coordinator.tick())
+                // Expired peer holds are pruned inside tick, so the flag is
+                // refreshed here too, not only when a message arrives.
+                machine?.peerHolding = coordinator.peersHolding().isNotEmpty()
             }
         }
     }

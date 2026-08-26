@@ -338,3 +338,35 @@ def test_a_cancel_needs_a_sustained_palm_where_a_catch_does_not():
 
     rig.hold(Pose.OPEN_PALM, 1.5)          # held deliberately
     assert rig.state is State.IDLE
+
+
+def test_a_palm_while_a_peer_holds_is_a_catch_not_an_arm():
+    """The failure this encodes: PC holding, user shows the phone a palm,
+    the phone ARMS, the closing fist GRABS, and the phone sends its own
+    photo into the very hand trying to catch one."""
+    rig = Rig()
+    rig.machine.set_peer_holding(True)
+
+    events = rig.feed(Pose.OPEN_PALM, 5)
+    assert EventType.CATCH_READY in _types(events)
+    assert rig.state is State.CATCHING
+
+
+def test_a_palm_with_no_peer_holding_still_arms():
+    rig = Rig()
+    rig.machine.set_peer_holding(False)
+    events = rig.feed(Pose.OPEN_PALM, 5)
+    assert EventType.ARMED in _types(events)
+
+
+def test_an_armed_fist_becomes_a_catch_when_the_peer_was_already_holding():
+    # Armed before the peer's hold was announced -- the announcement can
+    # arrive between two frames.
+    rig = Rig()
+    rig.feed(Pose.OPEN_PALM, 5)
+    assert rig.state is State.ARMED
+
+    rig.machine.set_peer_holding(True)
+    events = rig.feed(Pose.CLOSED_FIST, 5)
+    assert EventType.CATCH_READY in _types(events)
+    assert rig.state is State.CATCHING
