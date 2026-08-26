@@ -1,31 +1,37 @@
-"""An on-screen indicator, matching the one the phone shows.
+"""The ring: what the user sees when they are not looking at AirGrab.
 
-The tray icon changes colour and pops a balloon, and neither is enough. A
-balloon appears in the corner, is easy to miss entirely, and on Windows can be
-suppressed by focus-assist without telling anyone. The user reported exactly
-that: the phone told them what happened and the laptop appeared to do nothing.
+The phone draws a glowing hollow ring over whatever is on screen — Huawei's
+own receive light, the one element that makes the transfer read as the device
+responding rather than an app posting a notification. The user saw it on the
+phone and asked for the same on the laptop, which is exactly the right
+instinct: the two devices should speak one visual language, and the pill this
+module used to draw looked like a status bar next to the phone's halo.
 
-This is a small borderless window at the top of the screen showing the same
-thing the Android overlay shows, in the same colours, with the same wording.
+## How a hole is cut in a Tk window
+
+Tk has no per-pixel alpha, but on Windows a window can declare one colour to
+be see-through (``-transparentcolor``). The window here is a centred square
+filled with that colour; only the drawn ring and the caption are visible, and
+everything else — including clicks, mostly — falls through to whatever is
+underneath. The glow cannot truly fade over the desktop without real alpha,
+so it is stepped: three strokes of the same circle in shades stepping down
+toward the accent's darker half, which reads as light at arm's length.
 
 ## Threading
 
 Every Tk call happens on the one thread the Shell owns. That is not a style
-choice -- Tkinter is not thread-safe, and calling into it from another thread
-does not raise, it simply never paints, which is the exact bug that made the
-pairing dialog invisible earlier in this project. ``show`` is safe from
-anywhere; it hands the work to that thread.
+choice — Tkinter is not thread-safe, and calling into it from another thread
+does not raise, it simply never paints. ``show`` is safe from anywhere.
 """
 
 from __future__ import annotations
 
 from .shell import Shell
+from . import style
 
 # Matching android/app/src/main/kotlin/com/airgrab/GestureOverlay.kt, so the
-# two devices speak the same visual language. These are the dark-ground
-# variants because the pill is always dark, on both platforms and in both
-# system themes: it sits over whatever the user happens to be looking at, so
-# it cannot borrow a ground it does not control.
+# two devices speak the same visual language. Dark-ground variants, because
+# the ring floats over whatever the user happens to be looking at.
 COLOURS = {
     "holding": "#6E9BFF",
     "sent": "#5FD08A",
@@ -33,24 +39,35 @@ COLOURS = {
     "cancelled": "#F0724F",
 }
 
-BACKGROUND = "#1B1C1E"
 TEXT = "#F2F3F5"
+BACKGROUND = "#1B1C1E"
 
-WIDTH = 420
-HEIGHT = 56
-VISIBLE_MS = 1800
-FADE_MS = 16
-PEAK_ALPHA = 0.96
+# A colour nobody's desktop legitimately contains, sacrificed to be the hole.
+HOLE = "#010203"
+
+EDGE = 460           # the square window's side, px
+FULL_RADIUS = 96
+VISIBLE_MS = 2100
+DURATION_MS = 1900
+FRAME_MS = 16
 
 
 class Overlay:
-    """Shows a brief status pill. Safe to call from any thread."""
+    """Shows the ring. Safe to call from any thread."""
 
     def __init__(self, shell: Shell) -> None:
         self._shell = shell
         self._window = None
         self._canvas = None
         self._hide_job = None
+        self._start = 0.0
+        self._kind = "holding"
+        self._text = ""
+        self._rings: list = []
+        self._caption = None
+
+    # (stroke width, brightness) for the stepped glow, widest first.
+    GLOW = ((14, 0.22), (7, 0.5), (3, 1.0))
 
     def start(self) -> None:
         self._shell.submit(self._build)
@@ -73,11 +90,16 @@ class Overlay:
         window = tkinter.Toplevel(root)
         window.overrideredirect(True)          # no title bar, no border
         window.attributes("-topmost", True)
-        window.attributes("-alpha", 0.0)       # invisible until asked for
-        window.configure(bg=BACKGROUND)
+        window.configure(bg=HOLE)
+        try:
+            # Windows only; elsewhere the ring rides on a dark square, which
+            # is survivable. Everything painted HOLE becomes see-through.
+            window.attributes("-transparentcolor", HOLE)
+        except Exception:
+            pass
 
         self._canvas = tkinter.Canvas(
-            window, width=WIDTH, height=HEIGHT, bg=BACKGROUND, highlightthickness=0
+            window, width=EDGE, height=EDGE, bg=HOLE, highlightthickness=0
         )
         self._canvas.pack()
         window.withdraw()
@@ -92,50 +114,123 @@ class Overlay:
             self._window = None
 
     def _present(self, kind: str, text: str) -> None:
-        window, canvas, root = self._window, self._canvas, self._shell.root
-        if window is None or canvas is None or root is None:
+        import time
+
+        window, root = self._window, self._shell.root
+        if window is None or root is None:
             return
 
-        colour = COLOURS.get(kind, COLOURS["holding"])
+        self._kind = kind if kind in COLOURS else "holding"
+        self._text = text
+        self._start = time.monotonic()
+
+        canvas = self._canvas
         canvas.delete("all")
+        centre = EDGE / 2
+        self._rings = [
+            canvas.create_oval(0, 0, 0, 0, outline=HOLE, width=width, state="hidden")
+            for width, _dim in self.GLOW
+        ]
+        self._caption = None
+        if text:
+            text_y = centre + FULL_RADIUS + 44
+            half = max(60, 8 + 4 * len(text))
+            canvas.create_rectangle(
+                centre - half, text_y - 14, centre + half, text_y + 14,
+                fill=BACKGROUND, outline="",
+            )
+            self._caption = canvas.create_text(
+                centre, text_y, text=text, fill=BACKGROUND,
+                font=("Segoe UI", 10, "bold"),
+            )
 
-        # The dot carries the meaning; the text carries the detail. Same shape
-        # as the phone, so a user who has seen one recognises the other.
-        canvas.create_oval(20, 20, 36, 36, fill=colour, outline="")
-        canvas.create_text(
-            50, 28, text=text, anchor="w",
-            fill=TEXT, font=("Segoe UI", 11, "bold"),
+        screen_w = window.winfo_screenwidth()
+        screen_h = window.winfo_screenheight()
+        window.geometry(
+            f"{EDGE}x{EDGE}+{(screen_w - EDGE) // 2}+{(screen_h - EDGE) // 2}"
         )
-
-        screen_width = window.winfo_screenwidth()
-        window.geometry(f"{WIDTH}x{HEIGHT}+{(screen_width - WIDTH) // 2}+40")
         window.deiconify()
-        window.attributes("-alpha", 0.0)
-        self._fade(0.0, +0.12)
+        window.lift()
 
         if self._hide_job is not None:
             try:
                 root.after_cancel(self._hide_job)
             except Exception:
                 pass
-        self._hide_job = root.after(VISIBLE_MS, lambda: self._fade(PEAK_ALPHA, -0.08))
+        self._hide_job = root.after(VISIBLE_MS, self._conceal)
+        self._frame()
 
-    def _fade(self, value: float, step: float) -> None:
-        """Fade rather than blink: a window that snaps in and out reads as a
-        glitch, which is the opposite of reassuring."""
-        window, root = self._window, self._shell.root
-        if window is None or root is None:
+    def _conceal(self) -> None:
+        if self._window is not None:
+            try:
+                self._window.withdraw()
+            except Exception:
+                pass
+
+    # -------------------------------------------------------------- drawing
+
+    def _frame(self) -> None:
+        """One frame of the same three-act sweep the phone plays: bloom,
+        breathe, then resolve by kind — collapse for a finished transfer,
+        fade-out-in-place for a hold, an apologetic shrink for a cancel."""
+        import math
+        import time
+
+        window, canvas, root = self._window, self._canvas, self._shell.root
+        if window is None or canvas is None or root is None:
             return
-
-        value = max(0.0, min(PEAK_ALPHA, value + step))
         try:
-            window.attributes("-alpha", value)
+            if not window.winfo_viewable():
+                return
+
+            progress = min(1.0, (time.monotonic() - self._start) / (DURATION_MS / 1000))
+            centre = EDGE / 2
+
+            bloom = _ease(min(1.0, progress / 0.22))
+            resolving = _ease((progress - 0.78) / 0.22) if progress > 0.78 else 0.0
+            breathe = math.sin(progress * 5 * math.pi) * 4 if resolving == 0 else 0.0
+
+            if self._kind in ("sent", "received"):
+                radius = (18 + (FULL_RADIUS - 18) * bloom) * (1 - resolving) \
+                    + 8 * resolving + breathe
+                strength = bloom * (1 - resolving * resolving)
+            elif self._kind == "cancelled":
+                radius = (18 + (FULL_RADIUS - 18) * bloom) * (1 - resolving * 0.4)
+                strength = bloom * (1 - resolving)
+            else:
+                radius = 18 + (FULL_RADIUS - 18) * bloom + breathe
+                strength = bloom * (1 - resolving)
+
+            # The items are created once per showing and MOVED, never
+            # recreated. delete-and-redraw every frame made the animation
+            # visibly step on a layered window -- the user's words were
+            # "like a 30-picture animation" -- where coords() glides.
+            accent = COLOURS[self._kind]
+            for ring, (_width, dim) in zip(self._rings, self.GLOW):
+                canvas.coords(
+                    ring,
+                    centre - radius, centre - radius,
+                    centre + radius, centre + radius,
+                )
+                canvas.itemconfigure(
+                    ring, outline=style.wash(accent, HOLE, dim * strength),
+                    state="normal" if strength > 0.02 else "hidden",
+                )
+            if self._caption is not None:
+                canvas.itemconfigure(
+                    self._caption,
+                    fill=style.wash(TEXT, BACKGROUND, min(1.0, strength * 1.5)),
+                )
+
+            if progress < 1.0:
+                root.after(FRAME_MS, self._frame)
         except Exception:
+            # The window being torn down mid-frame must not take the drain
+            # loop with it. The next show() rebuilds cleanly.
             return
 
-        if step > 0 and value < PEAK_ALPHA:
-            root.after(FADE_MS, lambda: self._fade(value, step))
-        elif step < 0 and value > 0.0:
-            root.after(FADE_MS, lambda: self._fade(value, step))
-        elif step < 0:
-            window.withdraw()
+
+def _ease(value: float) -> float:
+    """Ease-out, so motion arrives instead of stopping."""
+    clamped = max(0.0, min(1.0, value))
+    return 1 - (1 - clamped) * (1 - clamped)
