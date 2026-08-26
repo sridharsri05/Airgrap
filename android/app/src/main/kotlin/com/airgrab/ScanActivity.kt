@@ -121,6 +121,12 @@ class ScanActivity : AppCompatActivity() {
     private fun join(link: DirectLink.Link) {
         status.text = "Joining ${link.ssid}…"
 
+        // A phone that is scanning wants to be a guest. If it is hosting its
+        // own direct link, the radio is busy being a router and the join
+        // request goes unanswered -- observed live when both phones had
+        // tapped "show a QR". Scanning wins; hosting stops.
+        DirectLink.stop()
+
         val specifier = WifiNetworkSpecifier.Builder()
             .setSsid(link.ssid)
             .setWpa2Passphrase(link.passphrase)
@@ -140,6 +146,7 @@ class ScanActivity : AppCompatActivity() {
                 // are untouched. Undone when the link is left.
                 connectivity.bindProcessToNetwork(network)
                 DirectJoin.remember(connectivity, this)
+                DirectJoin.hostAddress = hostAddressOf(connectivity, network)
                 runOnUiThread { finishWith("Connected to ${link.ssid}") }
             }
 
@@ -153,6 +160,26 @@ class ScanActivity : AppCompatActivity() {
         }
         DirectJoin.replace(connectivity, callback)
         connectivity.requestNetwork(request, callback, 30_000)
+    }
+
+    /** The host's address: the DHCP server, or the default route, or .1. */
+    private fun hostAddressOf(
+        connectivity: ConnectivityManager,
+        network: android.net.Network,
+    ): String? {
+        val properties = connectivity.getLinkProperties(network) ?: return null
+
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+            properties.dhcpServerAddress?.hostAddress?.let { return it }
+        }
+        properties.routes.firstOrNull { it.isDefaultRoute }
+            ?.gateway?.hostAddress?.takeIf { it != "0.0.0.0" }?.let { return it }
+
+        // A hotspot host puts itself at .1 of the subnet it hands out.
+        val own = properties.linkAddresses
+            .firstOrNull { it.address is java.net.Inet4Address }
+            ?.address?.hostAddress ?: return null
+        return own.substringBeforeLast('.') + ".1"
     }
 
     private fun finishWith(message: String) {
@@ -186,6 +213,17 @@ object DirectJoin {
     private var connectivity: ConnectivityManager? = null
     private var callback: ConnectivityManager.NetworkCallback? = null
 
+    /**
+     * The host phone's address on the direct link.
+     *
+     * mDNS does not reliably cross a local-only hotspot -- both phones were
+     * connected and neither could see the other. But a guest never needed
+     * discovery: the host IS the network's gateway. Remembering it lets the
+     * Devices card offer the host directly.
+     */
+    @Volatile
+    var hostAddress: String? = null
+
     fun replace(manager: ConnectivityManager, next: ConnectivityManager.NetworkCallback) {
         leave()
         connectivity = manager
@@ -203,5 +241,6 @@ object DirectJoin {
             callback?.let { connectivity?.unregisterNetworkCallback(it) }
         }
         callback = null
+        hostAddress = null
     }
 }

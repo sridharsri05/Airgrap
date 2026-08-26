@@ -803,6 +803,32 @@ class MainActivity : AppCompatActivity() {
         devicesList.removeAllViews()
 
         val peers = service?.peers.orEmpty()
+
+        // A direct-link host never appears through discovery -- mDNS does
+        // not reliably cross a local-only hotspot, which was watched happen:
+        // two phones connected, neither seeing the other. The guest needs no
+        // discovery though; the host IS the network's gateway.
+        val directHost = DirectJoin.hostAddress
+        if (directHost != null && node != null && peers.none { it.host == directHost }) {
+            devicesList.addView(Style.row(this).apply {
+                addView(LinearLayout(this@MainActivity).apply {
+                    orientation = LinearLayout.VERTICAL
+                    layoutParams = LinearLayout.LayoutParams(
+                        0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f
+                    )
+                    addView(Style.body(this@MainActivity, "Other phone",
+                        Style.text(this@MainActivity)))
+                    addView(Style.mono(this@MainActivity, "$directHost  ·  direct link"))
+                })
+            })
+            devicesList.addView(Style.spacer(this, 12))
+            devicesList.addView(accentButton("Pair over the direct link") {
+                pairDirect(directHost)
+            })
+            if (peers.isEmpty()) return
+            devicesList.addView(Style.spacer(this, 16))
+        }
+
         if (peers.isEmpty() || node == null) {
             devicesList.addView(Style.body(this, "None found yet."))
             return
@@ -1008,6 +1034,63 @@ class MainActivity : AppCompatActivity() {
     }
 
     // ---------------------------------------------------------------- pairing
+
+    /**
+     * Pair with the phone hosting the direct link, found by address rather
+     * than by discovery. Its identity is learned from the certificate it
+     * presents during pairing, exactly as with a discovered peer -- the
+     * address is only where to knock, never who answers.
+     */
+    private fun pairDirect(host: String) {
+        val service = AirGrabService.current ?: return
+        val node = service.node ?: return
+        if (!pairingInFlight.add("direct:$host")) return
+
+        lifecycleScope.launch(Dispatchers.IO) {
+            val before = node.trust.all().map { it.fingerprint }.toSet()
+            val outcome = runCatching {
+                node.pairWith(host, com.airgrab.core.DEFAULT_PORT) { sas ->
+                    confirmCode(sas, "the other phone")
+                }
+            }
+            val granted = outcome.getOrNull() == true
+
+            if (granted) {
+                // The freshly trusted fingerprint is whichever was not there
+                // before; link to it at the address we knocked on.
+                val trusted = node.trust.all().firstOrNull { it.fingerprint !in before }
+                if (trusted != null) {
+                    service.gestures?.connectTo(
+                        DiscoveredPeer(
+                            fingerprint = trusted.fingerprint,
+                            name = trusted.name,
+                            platform = trusted.platform,
+                            host = host,
+                            port = com.airgrab.core.DEFAULT_PORT,
+                        )
+                    )
+                }
+            } else {
+                outcome.exceptionOrNull()?.let {
+                    android.util.Log.e(AirGrabService.TAG, "direct pairing threw", it)
+                }
+            }
+
+            pairingInFlight.remove("direct:$host")
+            runOnUiThread {
+                Toast.makeText(
+                    this@MainActivity,
+                    when {
+                        granted -> "Paired over the direct link"
+                        outcome.exceptionOrNull() != null ->
+                            "Pairing failed: ${outcome.exceptionOrNull()?.message}"
+                        else -> "Pairing was declined"
+                    },
+                    Toast.LENGTH_LONG,
+                ).show()
+            }
+        }
+    }
 
     private fun pairWith(peer: DiscoveredPeer) {
         val node = AirGrabService.current?.node ?: return
