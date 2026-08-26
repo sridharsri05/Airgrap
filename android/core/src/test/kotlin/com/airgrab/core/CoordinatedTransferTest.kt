@@ -202,7 +202,9 @@ class CoordinatedTransferTest {
 
             assertTrue(desktop.downloads.isEmpty(), "a file was sent by a cancelled grab")
             assertFalse(phone.coordinator.holding)
-            assertEquals(null, phone.captured)
+            // The captured file is deliberately NOT null yet: it survives the
+            // linger window in case a catcher's release was already in
+            // flight. What matters is that nothing was SENT.
         }
     }
 
@@ -271,9 +273,9 @@ class CoordinatedTransferTest {
             val actions = coordinator.tick()
 
             // Otherwise the device stays armed and the next release anywhere
-            // sends a file the user grabbed long ago.
+            // sends a file the user grabbed long ago. The content itself is
+            // swept up later, after the linger window.
             assertFalse(coordinator.holding)
-            assertTrue(actions.any { it is Action.ClearContent })
             assertTrue(actions.any { it is Action.Broadcast })
         }
     }

@@ -68,13 +68,43 @@ def test_a_peer_release_while_holding_sends_the_file():
 
 def test_releasing_on_the_same_device_cancels_instead_of_sending():
     """Opening your hand where you grabbed is putting it back down."""
-    coord, _ = _coordinator()
+    coord, clock = _coordinator()
     coord.on_local_event(_event(EventType.GRABBED))
     actions = coord.on_local_event(_event(EventType.RELEASED))
-    assert _kinds(actions) == ["Broadcast", "ClearContent"]
+    assert _kinds(actions) == ["Broadcast"]
     assert actions[0].type == GestureMessage.HOLD_END
     assert not any(isinstance(a, SendCapturedFile) for a in actions)
     assert coord.holding is False
+
+    # The content is swept up only after the linger window: a catcher's
+    # release may already be in flight when this device thought better of it.
+    clock.advance(7.0)
+    assert _kinds(coord.tick()) == ["ClearContent"]
+
+
+def test_a_release_during_the_linger_still_sends():
+    """The race this exists for: on one desk, every camera sees every palm.
+
+    The grabber cancels on the same palm the catcher is completing with,
+    milliseconds apart, and without the linger the file was lost every
+    single time -- observed live, repeatedly, on real hardware."""
+    coord, clock = _coordinator()
+    coord.on_local_event(_event(EventType.GRABBED))
+    coord.on_local_event(_event(EventType.RELEASED))   # self-cancel
+
+    clock.advance(2.0)
+    actions = coord.on_peer_message(PEER_A, GestureMessage.RELEASE, {})
+    assert any(isinstance(a, SendCapturedFile) for a in actions)
+
+
+def test_a_release_after_the_linger_gets_nothing():
+    coord, clock = _coordinator()
+    coord.on_local_event(_event(EventType.GRABBED))
+    coord.on_local_event(_event(EventType.RELEASED))
+
+    clock.advance(20.0)
+    coord.tick()
+    assert coord.on_peer_message(PEER_A, GestureMessage.RELEASE, {}) == []
 
 
 def test_a_peer_cannot_pull_a_file_when_nothing_was_grabbed():
@@ -96,7 +126,7 @@ def test_cancelled_hold_announces_the_end():
     coord, _ = _coordinator()
     coord.on_local_event(_event(EventType.GRABBED))
     actions = coord.on_local_event(_event(EventType.CANCELLED))
-    assert _kinds(actions) == ["Broadcast", "ClearContent"]
+    assert _kinds(actions) == ["Broadcast"]
     assert coord.holding is False
 
 
@@ -106,14 +136,19 @@ def test_hold_expires_on_its_own():
     assert coord.tick() == []
     clock.advance(6.0)
     actions = coord.tick()
-    assert _kinds(actions) == ["Broadcast", "ClearContent"]
+    assert _kinds(actions) == ["Broadcast"]
     assert coord.holding is False
 
 
 def test_expired_hold_does_not_send_on_a_late_release():
+    # Past the window AND past the linger. A release inside the linger after
+    # an expiry is deliberately allowed -- it softens the timeout cliff for
+    # the user who walked to the other device slowly.
     coord, clock = _coordinator(window=5.0)
     coord.on_local_event(_event(EventType.GRABBED))
     clock.advance(6.0)
+    coord.tick()
+    clock.advance(10.0)
     coord.tick()
     assert coord.on_peer_message(PEER_A, GestureMessage.RELEASE, {}) == []
 

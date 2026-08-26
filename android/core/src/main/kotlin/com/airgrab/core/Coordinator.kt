@@ -49,6 +49,14 @@ class GestureCoordinator(
     private var holdStarted = 0L
     private val peersHolding = mutableMapOf<String, Long>()
 
+    // A hold that just ended lingers this long: the captured content is
+    // kept, and a peer's release arriving inside the window still gets the
+    // file. On one desk every camera sees every palm, so the grabber
+    // routinely cancels moments before the catcher's release arrives --
+    // with no linger, that race was lost every single time.
+    private val lingerMillis = 6_000L
+    private var lingerUntil = 0L
+
     fun peersHolding(): List<String> {
         expire()
         return peersHolding.keys.toList()
@@ -97,13 +105,18 @@ class GestureCoordinator(
             }
 
             GestureMessage.RELEASE -> {
-                // Only act while genuinely holding. Without this a peer could
-                // ask for a file at any moment; with it, a transfer always
-                // requires a deliberate grab on this device first.
-                if (!holding) {
+                // Only act while holding -- or just after. Without the
+                // holding requirement a peer could ask for a file at any
+                // moment; the linger keeps a deliberate grab redeemable for
+                // a few seconds after this device thought better of it,
+                // because the cancel it saw was usually the same palm the
+                // catcher saw.
+                val lingering = clock.nowMillis() < lingerUntil
+                if (!holding && !lingering) {
                     emptyList()
                 } else {
                     holding = false
+                    lingerUntil = 0
                     listOf(
                         Action.SendCapturedFile(peerFp),
                         Action.Broadcast(GestureMessage.HOLD_END),
@@ -116,10 +129,14 @@ class GestureCoordinator(
         }
     }
 
-    /** Expire a hold nobody ever caught. */
+    /** Expire a hold nobody ever caught, and sweep up after the linger. */
     fun tick(): List<Action> {
         expire()
         if (holding && clock.nowMillis() - holdStarted > holdWindowMillis) return endHold()
+        if (lingerUntil != 0L && clock.nowMillis() >= lingerUntil) {
+            lingerUntil = 0
+            return listOf(Action.ClearContent)
+        }
         return emptyList()
     }
 
@@ -130,13 +147,17 @@ class GestureCoordinator(
     fun reset() {
         holding = false
         holdStarted = 0
+        lingerUntil = 0
         peersHolding.clear()
     }
 
     private fun endHold(): List<Action> {
         holding = false
         holdStarted = 0
-        return listOf(Action.Broadcast(GestureMessage.HOLD_END), Action.ClearContent)
+        // The content is NOT cleared yet: it survives for the linger window
+        // in case a release is already on its way here.
+        lingerUntil = clock.nowMillis() + lingerMillis
+        return listOf(Action.Broadcast(GestureMessage.HOLD_END))
     }
 
     /**

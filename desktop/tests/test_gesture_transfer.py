@@ -154,6 +154,12 @@ async def test_releasing_on_the_grabbing_device_transfers_nothing(tmp_path: Path
 
         assert rig.landed == []
         assert rig.pc_session.coordinator.holding is False
+
+        # The captured file survives the cancel for a few seconds -- the
+        # linger -- so a catcher whose release was already in flight still
+        # gets it. What matters here is that nothing LANDED anywhere.
+        rig.pc_session.coordinator._linger_until = 1e-9  # i.e. long past
+        await rig.pc_session.observe(Pose.NONE)
         assert rig.pc_session.captured is None
 
 

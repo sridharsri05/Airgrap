@@ -129,11 +129,31 @@ class CoordinatorTest {
 
     @Test
     fun `an expired hold does not send on a late release`() {
+        // Past the window AND past the linger. A release inside the linger
+        // after an expiry is deliberately allowed -- it softens the timeout
+        // cliff for the user who walked to the other device slowly.
         val (coord, clock) = rig(windowMillis = 5_000)
         coord.onLocalEvent(event(GestureEventType.GRABBED))
         clock.advance(6_000)
         coord.tick()
+        clock.advance(10_000)
+        coord.tick()
         assertTrue(coord.onPeerMessage(peerA, GestureMessage.RELEASE, emptyMap()).isEmpty())
+    }
+
+    @Test
+    fun `a release during the linger still sends`() {
+        // The race this exists for: on one desk, every camera sees every
+        // palm. The grabber cancels on the same palm the catcher is
+        // completing with, milliseconds apart, and without the linger the
+        // file was lost every single time -- observed live, repeatedly.
+        val (coord, clock) = rig()
+        coord.onLocalEvent(event(GestureEventType.GRABBED))
+        coord.onLocalEvent(event(GestureEventType.RELEASED))   // self-cancel
+
+        clock.advance(2_000)
+        val actions = coord.onPeerMessage(peerA, GestureMessage.RELEASE, emptyMap())
+        assertTrue(actions.any { it is Action.SendCapturedFile })
     }
 
     @Test

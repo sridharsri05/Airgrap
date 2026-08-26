@@ -86,6 +86,13 @@ class GestureCoordinator:
         self._holding = False
         self._hold_started = 0.0
         self._peers_holding: dict[str, float] = {}
+        # A hold that just ended lingers this long: the captured content is
+        # kept, and a peer's release arriving inside the window still gets
+        # the file. On one desk every camera sees every palm, so the grabber
+        # routinely cancels moments before the catcher's release arrives --
+        # with no linger, that race was lost every single time.
+        self._linger_seconds = 6.0
+        self._linger_until = 0.0
 
     @property
     def holding(self) -> bool:
@@ -141,12 +148,16 @@ class GestureCoordinator:
             return []
 
         if message_type == GestureMessage.RELEASE:
-            # Only act while genuinely holding. Without this a peer could ask
-            # for a file at any moment; with it, a transfer always requires a
-            # deliberate grab on this device first.
-            if not self._holding:
+            # Only act while holding -- or just after. Without the holding
+            # requirement a peer could ask for a file at any moment; the
+            # linger keeps a deliberate grab redeemable for a few seconds
+            # after this device thought better of it, because the cancel it
+            # saw was usually the same palm the catcher saw.
+            lingering = self._clock() < self._linger_until
+            if not self._holding and not lingering:
                 return []
             self._holding = False
+            self._linger_until = 0.0
             return [
                 SendCapturedFile(peer_fp),
                 Broadcast(GestureMessage.HOLD_END, {}),
@@ -158,10 +169,13 @@ class GestureCoordinator:
     # ----------------------------------------------------------------- timing
 
     def tick(self) -> list[Action]:
-        """Expire a hold nobody ever caught."""
+        """Expire a hold nobody ever caught, and sweep up after the linger."""
         self._expire()
         if self._holding and self._clock() - self._hold_started > self._hold_window:
             return self._end_hold()
+        if self._linger_until and self._clock() >= self._linger_until:
+            self._linger_until = 0.0
+            return [ClearContent()]
         return []
 
     def peer_disconnected(self, peer_fp: str) -> None:
@@ -170,6 +184,7 @@ class GestureCoordinator:
     def reset(self) -> None:
         self._holding = False
         self._hold_started = 0.0
+        self._linger_until = 0.0
         self._peers_holding.clear()
 
     # -------------------------------------------------------------- internals
@@ -177,7 +192,10 @@ class GestureCoordinator:
     def _end_hold(self) -> list[Action]:
         self._holding = False
         self._hold_started = 0.0
-        return [Broadcast(GestureMessage.HOLD_END, {}), ClearContent()]
+        # The content is NOT cleared yet: it survives for the linger window
+        # in case a release is already on its way here.
+        self._linger_until = self._clock() + self._linger_seconds
+        return [Broadcast(GestureMessage.HOLD_END, {})]
 
     def _most_recent_holder(self) -> str | None:
         """With more than one peer holding, the most recent announcement wins.
