@@ -164,7 +164,8 @@ class MainActivity : AppCompatActivity() {
             if (GestureOverlay.permitted(this)) View.GONE else View.VISIBLE
         // Re-checked on resume: this is exactly the moment the user comes
         // back from the Wi-Fi panel having turned it on.
-        wifiCard.visibility = if (wifiIsOn()) View.GONE else View.VISIBLE
+        wifiCard.visibility =
+            if (wifiIsOn() || hotspotIsOn()) View.GONE else View.VISIBLE
     }
 
     private fun requestOverlayPermission() {
@@ -368,19 +369,47 @@ class MainActivity : AppCompatActivity() {
     private fun wifiCard(): LinearLayout {
         wifiCard = Style.card(this).apply {
             visibility = View.GONE
-            addView(Style.title(this@MainActivity, "WI-FI IS OFF"))
+            addView(Style.title(this@MainActivity, "NO NETWORK"))
             addView(Style.spacer(this@MainActivity, 10))
             addView(
                 Style.body(
                     this@MainActivity,
-                    "AirGrab finds your other devices over Wi-Fi. " +
-                        "Turn it on to be seen.",
+                    "AirGrab finds your other devices over Wi-Fi. Two ways " +
+                        "to get connected:\n\n" +
+                        "•  Join the same Wi-Fi as the other device, or\n" +
+                        "•  No Wi-Fi around? Turn on the hotspot on ONE " +
+                        "phone and connect the other device to it. No internet " +
+                        "is needed — the hotspot itself is enough.",
                 )
             )
             addView(Style.spacer(this@MainActivity, 14))
             addView(accentButton("Turn on Wi-Fi") { openWifiPanel() })
+            addView(Style.spacer(this@MainActivity, 8))
+            addView(quietButton("Use hotspot instead") { openHotspotSettings() })
         }
         return wifiCard
+    }
+
+    /**
+     * The tethering screen is not part of Android's public intent surface,
+     * so this is a ladder: the settings screen most firmwares actually use,
+     * then the generic wireless settings it lives under.
+     */
+    private fun openHotspotSettings() {
+        val direct = Intent().setClassName(
+            "com.android.settings", "com.android.settings.TetherSettings"
+        )
+        runCatching { startActivity(direct) }.onFailure {
+            runCatching {
+                startActivity(Intent(android.provider.Settings.ACTION_WIRELESS_SETTINGS))
+            }.onFailure {
+                Toast.makeText(
+                    this,
+                    "Open Settings and search for ‘hotspot’",
+                    Toast.LENGTH_LONG,
+                ).show()
+            }
+        }
     }
 
     private fun openWifiPanel() {
@@ -400,6 +429,24 @@ class MainActivity : AppCompatActivity() {
             (applicationContext.getSystemService(WIFI_SERVICE) as android.net.wifi.WifiManager)
                 .isWifiEnabled
         }.getOrDefault(true) // no answer must not nag; the card is for a KNOWN-off radio
+
+    /**
+     * True while this phone is being the router itself.
+     *
+     * A phone whose hotspot is on has Wi-Fi "off" and is perfectly
+     * reachable -- the other devices connect TO it. Showing the no-network
+     * card in that state would tell the user to undo exactly the setup this
+     * app suggested. The API is hidden, so reflection, and a phone that
+     * refuses to answer is treated as not-a-hotspot.
+     */
+    private fun hotspotIsOn(): Boolean =
+        runCatching {
+            val wifi = applicationContext.getSystemService(WIFI_SERVICE)
+                as android.net.wifi.WifiManager
+            val method = wifi.javaClass.getMethod("isWifiApEnabled")
+            method.isAccessible = true
+            method.invoke(wifi) as? Boolean ?: false
+        }.getOrDefault(false)
 
     private fun overlayCard(): LinearLayout {
         overlayCard = Style.card(this).apply {
