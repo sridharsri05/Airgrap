@@ -131,6 +131,10 @@ dependencies {
     // answering isAvailable() with a plain false.
     implementation("io.netty:netty-transport-classes-epoll:4.1.116.Final")
     implementation("io.netty:netty-transport-classes-kqueue:4.1.116.Final")
+    // QR generation only (no camera scanning -- the OTHER phone scans with
+    // its own camera app, which is the point: nothing to install first).
+    implementation("com.google.zxing:core:3.5.3")
+
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")

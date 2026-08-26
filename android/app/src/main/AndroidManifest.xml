@@ -9,6 +9,18 @@
          nothing and reports no error at all. -->
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
 
+    <!-- To HOST a direct link: the app starts a local-only hotspot and shows
+         its credentials as a QR the other phone scans. Android gates that
+         API behind nearby-devices (13+) or fine location (older). The
+         neverForLocation flag is the honest one: nothing here locates
+         anybody, it opens a radio. -->
+    <uses-permission
+        android:name="android.permission.NEARBY_WIFI_DEVICES"
+        android:usesPermissionFlags="neverForLocation" />
+    <uses-permission
+        android:name="android.permission.ACCESS_FINE_LOCATION"
+        android:maxSdkVersion="32" />
+
     <!-- connectedDevice, NOT dataSync: dataSync foreground services are capped
          at 6 hours per 24 since Android 15, so the link would be terminated
          once a day with no user-visible cause. -->

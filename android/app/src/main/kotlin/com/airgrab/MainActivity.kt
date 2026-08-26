@@ -108,6 +108,18 @@ class MainActivity : AppCompatActivity() {
      * permission never requested at all, and the service waiting behind a
      * dialog the user had not reached yet.
      */
+    /** Asked only when the user taps "Connect directly", not at launch. */
+    private val requestDirectLink = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) hostDirectLink()
+        else Toast.makeText(
+            this,
+            "Android needs that permission to open a direct link.",
+            Toast.LENGTH_LONG,
+        ).show()
+    }
+
     private val requestPermissions = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { _ ->
@@ -290,6 +302,10 @@ class MainActivity : AppCompatActivity() {
             addView(Style.title(this@MainActivity, "DEVICES"))
             addView(Style.spacer(this@MainActivity, 14))
             addView(devicesList)
+            addView(Style.spacer(this@MainActivity, 12))
+            // Present even on Wi-Fi: two phones on DIFFERENT networks meet
+            // the same wall, and the answer is the same QR.
+            addView(quietButton("Connect directly - show a QR") { hostDirectLink() })
         }
     }
 
@@ -383,11 +399,76 @@ class MainActivity : AppCompatActivity() {
                 )
             )
             addView(Style.spacer(this@MainActivity, 14))
-            addView(accentButton("Turn on Wi-Fi") { openWifiPanel() })
+            addView(accentButton("Connect directly - show a QR") { hostDirectLink() })
             addView(Style.spacer(this@MainActivity, 8))
-            addView(quietButton("Use hotspot instead") { openHotspotSettings() })
+            addView(quietButton("Turn on Wi-Fi") { openWifiPanel() })
+            addView(Style.spacer(this@MainActivity, 8))
+            addView(quietButton("Open hotspot settings") { openHotspotSettings() })
         }
         return wifiCard
+    }
+
+    // ------------------------------------------------------------ direct link
+
+    /**
+     * Host a private network and show its QR.
+     *
+     * The card used to explain the hotspot recipe and leave the user to
+     * carry it out by hand across two settings screens. This does the whole
+     * thing: the app starts Android's local-only hotspot (a private Wi-Fi
+     * with no internet, invented for exactly this), and the other phone
+     * joins by pointing its ordinary camera at the code -- nothing typed,
+     * nothing installed first.
+     */
+    private fun hostDirectLink() {
+        if (!DirectLink.permitted(this)) {
+            requestDirectLink.launch(DirectLink.permission)
+            return
+        }
+        DirectLink.start(
+            this,
+            onReady = { link -> runOnUiThread { showDirectLinkDialog(link) } },
+            onFailed = { reason ->
+                runOnUiThread { Toast.makeText(this, reason, Toast.LENGTH_LONG).show() }
+            },
+        )
+    }
+
+    private fun showDirectLinkDialog(link: DirectLink.Link) {
+        val size = Style.dp(this, 260)
+        val image = ImageView(this).apply {
+            setImageBitmap(DirectLink.qrBitmap(link, size))
+            layoutParams = LinearLayout.LayoutParams(size, size)
+        }
+
+        val body = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = android.view.Gravity.CENTER_HORIZONTAL
+            val pad = Style.dp(this@MainActivity, 20)
+            setPadding(pad, pad, pad, 0)
+            addView(image)
+            addView(Style.spacer(this@MainActivity, 12))
+            addView(
+                Style.body(
+                    this@MainActivity,
+                    "On the other phone, open the CAMERA and point it here. " +
+                        "Tap the prompt to join, then open AirGrab on it.\n\n" +
+                        "Network: ${link.ssid}\nPassword: ${link.passphrase}",
+                )
+            )
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("Direct link")
+            .setView(body)
+            // Dismissing must NOT stop the network -- the other phone is on
+            // it. Hosting ends explicitly, or when AirGrab itself stops.
+            .setPositiveButton("Keep running") { dialog, _ -> dialog.dismiss() }
+            .setNegativeButton("Stop hosting") { _, _ ->
+                DirectLink.stop()
+                Toast.makeText(this, "Direct link stopped", Toast.LENGTH_SHORT).show()
+            }
+            .show()
     }
 
     /**
