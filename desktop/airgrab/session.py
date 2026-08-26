@@ -120,6 +120,12 @@ class GestureSession:
 
             elif isinstance(action, SendCapturedFile):
                 await self._deliver(action.peer_fp)
+                # The camera's state machine still says HOLDING -- it only
+                # ever exits on a palm at this device or its own timeout, and
+                # a peer catching is neither. Without this the screen kept
+                # saying "Holding" for up to a minute after the file had
+                # already landed on the other device.
+                self.machine.reset()
 
     async def _deliver(self, peer_fp: str) -> None:
         path = self._captured

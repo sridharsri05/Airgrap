@@ -188,6 +188,13 @@ class GestureOrchestrator(
                     }
                 }
                 onStatus(if (sent) "Sent ${file.name}" else "Send failed")
+
+                // The camera's state machine still says HOLDING -- it only
+                // ever exits on a palm at this device or its own timeout,
+                // and a peer catching is neither. Without this the screen
+                // kept saying "Holding" for up to a minute after the file
+                // had already landed on the other device.
+                machine?.reset()
             }
         }
     }
