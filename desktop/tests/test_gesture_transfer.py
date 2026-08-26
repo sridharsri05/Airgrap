@@ -23,6 +23,10 @@ FAST = GestureConfig(
     disarm_seconds=0.0,
     min_frames=2,
     hold_timeout_seconds=30.0,
+    # Zero, or the change-of-mind test would have to really wait five
+    # seconds. The grace behaviour itself is covered in test_gesture.py.
+    cancel_grace_seconds=0.0,
+    cancel_seconds=0.0,
 )
 
 

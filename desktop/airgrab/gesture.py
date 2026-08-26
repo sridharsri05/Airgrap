@@ -85,6 +85,20 @@ class GestureConfig:
     # real attempt it expired mid-stride and the grab silently became a
     # cancel.
     hold_timeout_seconds: float = 60.0
+    # How long after a grab an open palm at the SAME device is ignored
+    # rather than read as "changed my mind". Nobody keeps a fist closed
+    # while lowering a phone or reaching to pick one up: on a live desk with
+    # both cameras watching, every single attempt ended with the grabbing
+    # device seeing that natural hand-opening and cancelling its own hold —
+    # seven times in a row before this existed. A real cancel is a palm shown
+    # deliberately, later.
+    cancel_grace_seconds: float = 5.0
+    # A cancel must be SLOWER than a catch. On one desk both cameras see the
+    # same palm: the receiver completes on a quick palm (release_seconds),
+    # and by the time this sustained threshold trips at the grabber, the
+    # transfer has already happened and the hold is legitimately over. A
+    # quick threshold here made the grabber win that race every time.
+    cancel_seconds: float = 2.5
 
 
 class GrabStateMachine:
@@ -165,7 +179,9 @@ class GrabStateMachine:
         if self._state is State.HOLDING:
             # Pose.NONE is deliberately not handled here: the hand leaving the
             # frame is the user carrying the file to the other device.
-            if self._streak_is(Pose.OPEN_PALM, self.config.release_seconds, now):
+            palm = self._streak_is(Pose.OPEN_PALM, self.config.cancel_seconds, now)
+            settled = now - self._held_since >= self.config.cancel_grace_seconds
+            if palm and settled:
                 events.append(self._transition(EventType.RELEASED, State.IDLE, now))
             return events
 

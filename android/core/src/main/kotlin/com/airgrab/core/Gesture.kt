@@ -52,6 +52,26 @@ data class GestureConfig(
      * still expires, just not while the user is mid-stride.
      */
     val holdTimeoutMillis: Long = 60_000,
+    /**
+     * How long after a grab an open palm at the SAME device is ignored
+     * rather than read as "changed my mind".
+     *
+     * Nobody keeps a fist closed while putting a phone down: on a live desk
+     * with both cameras watching, every attempt ended with the grabbing
+     * device seeing that natural hand-opening and cancelling its own hold —
+     * seven times in a row. A real cancel is a palm shown deliberately,
+     * after the moment has settled. Applies to HOLDING only; a catch is
+     * completed by a palm and must stay immediate.
+     */
+    val cancelGraceMillis: Long = 5_000,
+    /**
+     * A cancel must be SLOWER than a catch. On one desk both cameras see
+     * the same palm: the receiver completes on a quick palm (releaseMillis),
+     * and by the time this sustained threshold trips at the grabber the
+     * transfer has already happened. A quick threshold here made the grabber
+     * win that race every time.
+     */
+    val cancelMillis: Long = 2_500,
 )
 
 /** Monotonic milliseconds. Injectable so tests need no real clock. */
@@ -134,7 +154,16 @@ class GrabStateMachine(
 
             // Pose.NONE is deliberately unhandled here: the hand leaving the
             // frame is the user carrying the file to the other device.
-            GestureState.HOLDING, GestureState.CATCHING ->
+            GestureState.HOLDING ->
+                if (streakIs(Pose.OPEN_PALM, config.cancelMillis, now) &&
+                    now - heldSince >= config.cancelGraceMillis
+                ) {
+                    listOf(transition(GestureEventType.RELEASED, GestureState.IDLE, now))
+                } else {
+                    emptyList()
+                }
+
+            GestureState.CATCHING ->
                 if (streakIs(Pose.OPEN_PALM, config.releaseMillis, now)) {
                     listOf(transition(GestureEventType.RELEASED, GestureState.IDLE, now))
                 } else {

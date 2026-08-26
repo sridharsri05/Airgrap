@@ -17,7 +17,7 @@ class GestureTest {
         fun advance(millis: Long) { now += millis }
     }
 
-    private class Rig {
+    private class Rig(cancelGraceMillis: Long = 0) {
         val clock = FakeClock()
         val machine = GrabStateMachine(
             GestureConfig(
@@ -28,6 +28,10 @@ class GestureTest {
                 disarmMillis = 100,
                 minFrames = 2,
                 holdTimeoutMillis = 10_000,
+                // Zero by default so the transition tests read plainly; the
+                // grace has its own tests below with a real value.
+                cancelGraceMillis = cancelGraceMillis,
+                cancelMillis = 60,
             ),
             clock,
         )
@@ -193,5 +197,75 @@ class GestureTest {
             ),
             slow.first,
         )
+    }
+
+    // -------------------------------------------------------- cancel grace
+
+    @Test
+    fun `a palm right after grabbing does not cancel`() {
+        // The finding that forced this: nobody keeps a fist closed while
+        // lowering a phone. Seven live attempts in a row ended with the
+        // grabbing device reading that natural hand-opening as a cancel.
+        val rig = Rig(cancelGraceMillis = 2_000)
+        rig.feed(Pose.OPEN_PALM, 5)
+        rig.feed(Pose.CLOSED_FIST, 5)
+        assertEquals(GestureState.HOLDING, rig.state)
+
+        rig.feed(Pose.OPEN_PALM, 5)
+        assertEquals(GestureState.HOLDING, rig.state)
+    }
+
+    @Test
+    fun `a palm after the grace period cancels deliberately`() {
+        val rig = Rig(cancelGraceMillis = 2_000)
+        rig.feed(Pose.OPEN_PALM, 5)
+        rig.feed(Pose.CLOSED_FIST, 5)
+        rig.clock.advance(2_500)
+
+        val events = rig.feed(Pose.OPEN_PALM, 5)
+        assertTrue(GestureEventType.RELEASED in types(events))
+        assertEquals(GestureState.IDLE, rig.state)
+    }
+
+    @Test
+    fun `a catch is never delayed by the grace`() {
+        // The palm at the RECEIVING device completes the gesture, not a
+        // change of mind. Making the receiver wait would read as broken.
+        val rig = Rig(cancelGraceMillis = 5_000)
+        rig.feed(Pose.CLOSED_FIST, 5) // a fist without arming: catching
+        assertEquals(GestureState.CATCHING, rig.state)
+
+        val events = rig.feed(Pose.OPEN_PALM, 5)
+        assertTrue(GestureEventType.RELEASED in types(events))
+    }
+
+    @Test
+    fun `a cancel needs a sustained palm where a catch does not`() {
+        // Both cameras see the same palm on one desk. The receiver completes
+        // on a quick palm; the grabber needs a long one, so the transfer
+        // wins the race.
+        val rig = Rig()
+        rig.machine.let { }
+        val slow = GrabStateMachine(
+            GestureConfig(
+                armMillis = 100, grabMillis = 60, releaseMillis = 60,
+                catchMillis = 60, disarmMillis = 100, minFrames = 2,
+                holdTimeoutMillis = 10_000,
+                cancelGraceMillis = 0, cancelMillis = 1_000,
+            ),
+            rig.clock,
+        )
+        fun feed(pose: Pose, frames: Int) = (1..frames).flatMap {
+            rig.clock.advance(33); slow.observe(pose)
+        }
+        feed(Pose.OPEN_PALM, 5)
+        feed(Pose.CLOSED_FIST, 5)
+        assertEquals(GestureState.HOLDING, slow.state)
+
+        feed(Pose.OPEN_PALM, 5) // a glimpse: ~165ms
+        assertEquals(GestureState.HOLDING, slow.state)
+
+        feed(Pose.OPEN_PALM, 40) // held deliberately: ~1.3s
+        assertEquals(GestureState.IDLE, slow.state)
     }
 }

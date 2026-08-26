@@ -237,6 +237,23 @@ class AirGrabApp:
 
     def _on_peer_found(self, peer: DiscoveredPeer) -> None:
         self._log.info("found %s at %s:%s", peer.name, peer.host, peer.port)
+
+        # One node per address. A reinstalled app comes back with a fresh
+        # identity, but its OLD advertisement lingers in mDNS caches until
+        # the TTL runs out -- there is no goodbye packet from an uninstall.
+        # Keeping both meant the PC tried to link to the ghost, the pinning
+        # check correctly refused the certificate it met, and the user was
+        # told their phone was unreachable while it sat there working.
+        stale = [
+            fp for fp, known in self._peers.items()
+            if fp != peer.fingerprint
+            and (known.host, known.port) == (peer.host, peer.port)
+        ]
+        for fp in stale:
+            self._log.info("dropping stale identity %s for %s", fp[:16], peer.host)
+            self._peers.pop(fp, None)
+            self._session.forget_peer(fp)
+
         self._peers[peer.fingerprint] = peer
         if not self._node.trust.is_trusted(peer.fingerprint):
             self._set_state(
@@ -254,6 +271,7 @@ class AirGrabApp:
         try:
             await self._node.open_link(peer.host, peer.port, expect_fp=peer.fingerprint)
         except Exception as exc:
+            self._log.warning("link to %s (%s) failed: %s", peer.name, peer.host, exc)
             self._set_state(
                 "unreachable", peer=peer.name,
                 tray=f"Could not reach {peer.name}: {exc}",

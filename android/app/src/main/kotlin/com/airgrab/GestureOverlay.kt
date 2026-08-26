@@ -12,8 +12,9 @@ import android.provider.Settings
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
-import android.view.animation.DecelerateInterpolator
+import kotlin.math.PI
 import kotlin.math.min
+import kotlin.math.sin
 
 /**
  * What the user sees when they are not looking at AirGrab.
@@ -23,17 +24,23 @@ import kotlin.math.min
  * length. Haptics tell the user that *something* happened; this tells them
  * *what*, without them having to open anything.
  *
- * It draws over other apps, which needs a permission the user grants by hand.
- * That is a real cost, so the overlay is optional: without it everything still
- * works, and the feedback is the vibration alone.
+ * ## Why a ring
  *
- * Deliberately small and brief. An overlay that lingers, or covers content, is
- * worse than none — this is a status light, not a window.
+ * Huawei's own transfer draws a glowing hollow ring over whatever is on
+ * screen — no app opens, nothing else moves, one circle of light appears and
+ * the photo lands into it. It reads as the device itself responding rather
+ * than an app posting a notification, and that is the feeling this feature
+ * sells. The first version here was a pill with text, which was honest and
+ * looked like a status bar; this is the ring.
+ *
+ * It draws over other apps, which needs a permission the user grants by hand.
+ * That is a real cost, so the overlay is optional: without it everything
+ * still works, and the feedback is the vibration alone.
  */
 class GestureOverlay(private val context: Context) {
 
     companion object {
-        private const val VISIBLE_MILLIS = 1600L
+        private const val VISIBLE_MILLIS = 2100L
 
         /** True when the user has allowed drawing over other apps. */
         fun permitted(context: Context): Boolean =
@@ -43,7 +50,7 @@ class GestureOverlay(private val context: Context) {
     enum class Kind { HOLDING, SENT, RECEIVED, CANCELLED }
 
     private val windows = context.getSystemService(WindowManager::class.java)
-    private var view: RippleView? = null
+    private var view: RingView? = null
     private val main = android.os.Handler(context.mainLooper)
 
     fun show(kind: Kind, label: String) {
@@ -54,7 +61,7 @@ class GestureOverlay(private val context: Context) {
     private fun present(kind: Kind, label: String) {
         hideNow()
 
-        val ripple = RippleView(context, kind, label)
+        val ring = RingView(context, kind, label)
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -67,12 +74,11 @@ class GestureOverlay(private val context: Context) {
             PixelFormat.TRANSLUCENT,
         ).apply {
             gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-            y = (24 * context.resources.displayMetrics.density).toInt()
         }
 
-        runCatching { windows.addView(ripple, params) }.onFailure { return }
-        view = ripple
-        ripple.play { hideNow() }
+        runCatching { windows.addView(ring, params) }.onFailure { return }
+        view = ring
+        ring.play()
 
         main.postDelayed({ hideNow() }, VISIBLE_MILLIS)
     }
@@ -86,25 +92,33 @@ class GestureOverlay(private val context: Context) {
     }
 
     /**
-     * A pill with a ripple washing outward from it.
+     * A glowing hollow ring in the upper third of the screen.
      *
      * Drawn rather than assembled from views because the whole thing is one
-     * animation over one surface; a layout would add hierarchy for nothing.
+     * animation over one surface. The glow is three concentric strokes of the
+     * same circle — wide and faint, narrower and stronger, then a bright
+     * near-white core — because that reads as light on any background,
+     * where a blur filter behaves differently across hardware canvases.
+     *
+     * The animation has three acts in one sweep of progress: the ring blooms
+     * out of the top of the screen (where the camera that saw the hand
+     * lives), breathes while it holds, then resolves — collapsing into
+     * itself for a finished transfer, fading in place for a hold, shrinking
+     * out apologetically for a cancel.
      */
-    private class RippleView(
+    private class RingView(
         context: Context,
         private val kind: Kind,
-        private val label: String,
+        label: String,
     ) : View(context) {
 
         private val density = resources.displayMetrics.density
         private fun dp(value: Float) = value * density
 
-        // Matching desktop/airgrab/ui/overlay.py, so a user who has seen one
-        // device recognises the other. These are the dark-ground variants of
-        // the palette in ui/Style.kt, and stay dark in both system themes:
-        // the pill sits over whatever the user happens to be looking at, so
-        // it cannot borrow a ground it does not control.
+        // Matching desktop/airgrab/ui/overlay.py and the palette in
+        // ui/Style.kt: dark-ground variants, because this floats over
+        // whatever the user happens to be looking at and cannot borrow a
+        // ground it does not control.
         private val accent = when (kind) {
             Kind.HOLDING -> Color.parseColor("#6E9BFF")
             Kind.SENT -> Color.parseColor("#5FD08A")
@@ -112,36 +126,37 @@ class GestureOverlay(private val context: Context) {
             Kind.CANCELLED -> Color.parseColor("#F0724F")
         }
 
-        private val pillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            // Night Black's surface, at 95% so what is underneath still reads
-            // as being underneath.
-            color = Color.parseColor("#F21B1C1E")
-        }
-        private val ripplePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            style = Paint.Style.STROKE
-            color = accent
-        }
-        private val dotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = accent }
+        /** The core of the ring: the accent lifted most of the way to white,
+         *  so the circle reads as light rather than as a coloured line. */
+        private val core = blendTowardWhite(accent, 0.65f)
+
+        private val glowWide = strokePaint(accent, dp(16f))
+        private val glowMid = strokePaint(accent, dp(7f))
+        private val coreStroke = strokePaint(core, dp(3f))
+
         private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.parseColor("#F2F3F5")
-            textSize = dp(14f)
+            textSize = dp(13f)
             typeface = android.graphics.Typeface.DEFAULT_BOLD
+            textAlign = Paint.Align.CENTER
+        }
+        private val backdropPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.parseColor("#CC1B1C1E")
+        }
+
+        private val text = when (kind) {
+            Kind.HOLDING -> if (label.isBlank()) "Holding" else "Holding · $label"
+            Kind.SENT -> "Sent · $label"
+            Kind.RECEIVED -> "Received · $label"
+            Kind.CANCELLED -> label.ifBlank { "Nothing was sent" }
         }
 
         private var progress = 0f
         private var animator: ValueAnimator? = null
 
-        private val text = when (kind) {
-            Kind.HOLDING -> if (label.isBlank()) "Holding" else "Holding  $label"
-            Kind.SENT -> "Sent  $label"
-            Kind.RECEIVED -> "Received  $label"
-            Kind.CANCELLED -> label.ifBlank { "Nothing to send" }
-        }
-
-        fun play(onEnd: () -> Unit) {
+        fun play() {
             animator = ValueAnimator.ofFloat(0f, 1f).apply {
-                duration = 1400
-                interpolator = DecelerateInterpolator()
+                duration = 1900
                 addUpdateListener {
                     progress = it.animatedValue as Float
                     invalidate()
@@ -158,47 +173,92 @@ class GestureOverlay(private val context: Context) {
         override fun onMeasure(widthSpec: Int, heightSpec: Int) {
             setMeasuredDimension(
                 MeasureSpec.getSize(widthSpec),
-                dp(72f).toInt(),
+                dp(300f).toInt(),
             )
         }
 
         override fun onDraw(canvas: Canvas) {
-            val centreY = height / 2f
-            val padding = dp(16f)
-            val textWidth = textPaint.measureText(text)
-            val pillWidth = min(width - dp(32f), textWidth + dp(72f))
-            val left = (width - pillWidth) / 2f
-            val pillHeight = dp(44f)
+            val centreX = width / 2f
+            val centreY = dp(128f)
+            val full = dp(72f)
 
-            // The ripple washes outward from the dot and fades as it goes,
-            // so the eye is drawn to the indicator rather than the edge.
-            val rippleAlpha = ((1f - progress) * 150).toInt().coerceIn(0, 255)
-            if (rippleAlpha > 0) {
-                ripplePaint.alpha = rippleAlpha
-                ripplePaint.strokeWidth = dp(2.5f) * (1f - progress * 0.6f)
-                val radius = dp(14f) + progress * dp(46f)
-                canvas.drawCircle(left + padding + dp(10f), centreY, radius, ripplePaint)
+            // Three acts on one clock.
+            val bloom = smooth(min(1f, progress / 0.22f))
+            val resolving = if (progress > 0.78f) smooth((progress - 0.78f) / 0.22f) else 0f
+
+            // While holding, the ring breathes — the sign of something live
+            // rather than a stamp.
+            val breathe = if (resolving == 0f) {
+                (sin(progress * 5f * PI).toFloat()) * dp(3.5f)
+            } else 0f
+
+            val radius: Float
+            val alpha: Float
+            when (kind) {
+                Kind.SENT, Kind.RECEIVED -> {
+                    // The transfer resolves by the ring collapsing into
+                    // itself — the file "lands" through it.
+                    radius = (dp(18f) + (full - dp(18f)) * bloom) * (1f - resolving) +
+                        dp(6f) * resolving + breathe
+                    alpha = bloom * (1f - resolving * resolving)
+                }
+                Kind.HOLDING -> {
+                    radius = dp(18f) + (full - dp(18f)) * bloom + breathe
+                    alpha = bloom * (1f - resolving)
+                }
+                Kind.CANCELLED -> {
+                    radius = (dp(18f) + (full - dp(18f)) * bloom) * (1f - resolving * 0.4f)
+                    alpha = bloom * (1f - resolving)
+                }
             }
 
-            // The pill fades in quickly and holds, so the text is readable for
-            // most of the animation rather than only at its peak.
-            val appear = min(1f, progress * 5f)
-            pillPaint.alpha = (appear * 242).toInt().coerceIn(0, 255)
-            canvas.drawRoundRect(
-                RectF(left, centreY - pillHeight / 2, left + pillWidth, centreY + pillHeight / 2),
-                pillHeight / 2, pillHeight / 2, pillPaint,
-            )
+            if (alpha > 0.01f) {
+                glowWide.alpha = (alpha * 46).toInt().coerceIn(0, 255)
+                glowMid.alpha = (alpha * 110).toInt().coerceIn(0, 255)
+                coreStroke.alpha = (alpha * 255).toInt().coerceIn(0, 255)
+                canvas.drawCircle(centreX, centreY, radius, glowWide)
+                canvas.drawCircle(centreX, centreY, radius, glowMid)
+                canvas.drawCircle(centreX, centreY, radius, coreStroke)
+            }
 
-            dotPaint.alpha = (appear * 255).toInt().coerceIn(0, 255)
-            canvas.drawCircle(left + padding + dp(10f), centreY, dp(7f), dotPaint)
+            // The name sits under the ring, on a soft backdrop so it stays
+            // readable over whatever the user was looking at. It fades with
+            // the ring: the ring is the message, this is the caption.
+            val textAlpha = (alpha * 255).toInt().coerceIn(0, 255)
+            if (textAlpha > 8) {
+                val textY = centreY + full + dp(40f)
+                val halfWidth = textPaint.measureText(text) / 2f + dp(14f)
+                backdropPaint.alpha = (alpha * 204).toInt().coerceIn(0, 255)
+                canvas.drawRoundRect(
+                    RectF(
+                        centreX - halfWidth, textY - dp(17f),
+                        centreX + halfWidth, textY + dp(11f),
+                    ),
+                    dp(14f), dp(14f), backdropPaint,
+                )
+                textPaint.alpha = textAlpha
+                canvas.drawText(text, centreX, textY, textPaint)
+            }
+        }
 
-            textPaint.alpha = (appear * 255).toInt().coerceIn(0, 255)
-            canvas.drawText(
-                text,
-                left + padding + dp(30f),
-                centreY - (textPaint.descent() + textPaint.ascent()) / 2,
-                textPaint,
+        private fun strokePaint(colour: Int, width: Float) =
+            Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                style = Paint.Style.STROKE
+                strokeWidth = width
+                color = colour
+            }
+
+        private fun blendTowardWhite(colour: Int, strength: Float): Int {
+            fun mix(part: Int) = (part + (255 - part) * strength).toInt()
+            return Color.rgb(
+                mix(Color.red(colour)), mix(Color.green(colour)), mix(Color.blue(colour))
             )
+        }
+
+        /** Ease-out, so motion arrives instead of stopping. */
+        private fun smooth(value: Float): Float {
+            val clamped = value.coerceIn(0f, 1f)
+            return 1f - (1f - clamped) * (1f - clamped)
         }
     }
 }

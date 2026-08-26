@@ -46,6 +46,10 @@ class Rig:
             disarm_seconds=0.10,
             min_frames=2,
             hold_timeout_seconds=10.0,
+            # Zero here so the long-standing transition tests stay readable;
+            # the grace period has its own tests below with a real value.
+            cancel_grace_seconds=0.0,
+            cancel_seconds=0.06,
         )
         defaults.update(overrides)
         self.machine = GrabStateMachine(GestureConfig(**defaults), clock=self.clock)
@@ -280,3 +284,57 @@ def test_a_realistic_full_round_trip():
     assert _types(receiver_events) == [EventType.CATCH_READY, EventType.RELEASED]
     assert sender.state is State.HOLDING
     assert receiver.state is State.IDLE
+
+
+# ------------------------------------------------------------ cancel grace
+
+
+def test_a_palm_right_after_grabbing_does_not_cancel():
+    """The finding that forced this: nobody keeps a fist closed while
+    lowering a phone. Seven live attempts in a row ended with the grabbing
+    device reading that natural hand-opening as 'changed my mind'."""
+    rig = Rig(cancel_grace_seconds=2.0)
+    rig.feed(Pose.OPEN_PALM, 5)
+    rig.feed(Pose.CLOSED_FIST, 5)
+    assert rig.state is State.HOLDING
+
+    rig.feed(Pose.OPEN_PALM, 5)
+    assert rig.state is State.HOLDING, "the grace period did not hold"
+
+
+def test_a_palm_after_the_grace_period_cancels_deliberately():
+    rig = Rig(cancel_grace_seconds=2.0)
+    rig.feed(Pose.OPEN_PALM, 5)
+    rig.feed(Pose.CLOSED_FIST, 5)
+    rig.clock.advance(2.5)
+
+    events = rig.feed(Pose.OPEN_PALM, 5)
+    assert EventType.RELEASED in _types(events)
+    assert rig.state is State.IDLE
+
+
+def test_a_catch_is_never_delayed_by_the_grace():
+    # The palm at the RECEIVING device is the completion of the gesture, not
+    # a change of mind. Making the receiver wait five seconds would read as
+    # the transfer being broken.
+    rig = Rig(cancel_grace_seconds=5.0)
+    rig.feed(Pose.CLOSED_FIST, 5)          # a fist without arming: catching
+    assert rig.state is State.CATCHING
+
+    events = rig.feed(Pose.OPEN_PALM, 5)   # no waiting: the catch completes
+    assert EventType.RELEASED in _types(events)
+
+
+def test_a_cancel_needs_a_sustained_palm_where_a_catch_does_not():
+    """Both cameras see the same palm on one desk. The receiver completes on
+    a quick palm; the grabber must need a long one, so the transfer wins."""
+    rig = Rig(cancel_seconds=1.0)
+    rig.feed(Pose.OPEN_PALM, 5)
+    rig.feed(Pose.CLOSED_FIST, 5)
+    assert rig.state is State.HOLDING
+
+    rig.feed(Pose.OPEN_PALM, 5)            # a quick palm: ~150ms
+    assert rig.state is State.HOLDING, "a glimpse of palm must not cancel"
+
+    rig.hold(Pose.OPEN_PALM, 1.5)          # held deliberately
+    assert rig.state is State.IDLE
