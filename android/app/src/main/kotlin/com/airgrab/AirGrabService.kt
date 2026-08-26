@@ -238,6 +238,11 @@ class AirGrabService : LifecycleService() {
             started.onIncomingFile = { file ->
                 activity = "Received ${file.name}"
                 activityAt = System.currentTimeMillis()
+                // Tell the media scanner, so a received photo appears in the
+                // gallery now rather than after the next reboot.
+                android.media.MediaScannerConnection.scanFile(
+                    this, arrayOf(file.absolutePath), null, null
+                )
                 synchronized(received) {
                     received.addFirst(Arrival(file, file.length(), System.currentTimeMillis()))
                     while (received.size > 20) received.removeLast()
@@ -477,14 +482,14 @@ class AirGrabService : LifecycleService() {
             .replaceFirstChar { it.uppercase() }
 
     /**
-     * Where received files land.
+     * Where received files land: the user's choice, Downloads by default.
      *
-     * App-specific external storage, which needs no permission and survives
-     * uninstall cleanly. Putting files straight into the shared Downloads
-     * folder would need MediaStore work and would make a hash-mismatched
-     * partial file visible to the gallery, which is exactly what the transfer
-     * layer goes to lengths to prevent.
+     * Public storage on purpose. The private folder needed no permission and
+     * was invisible -- modern Android will not let a file manager browse
+     * Android/data, so a received photo existed somewhere the user could
+     * never navigate to. Partial files stay unindexable regardless: the
+     * transfer layer writes them as dot-prefixed temp names and renames only
+     * after the hash verifies.
      */
-    fun downloadDirectory(): File =
-        File(getExternalFilesDir(null) ?: filesDir, "AirGrab").apply { mkdirs() }
+    fun downloadDirectory(): File = ReceiveFolder.directory(this)
 }

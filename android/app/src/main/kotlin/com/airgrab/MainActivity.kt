@@ -296,14 +296,60 @@ class MainActivity : AppCompatActivity() {
         receivedList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         receivedWhere = Style.mono(this, "")
         receivedCard = Style.card(this).apply {
-            visibility = View.GONE
             addView(Style.title(this@MainActivity, "ARRIVED"))
             addView(Style.spacer(this@MainActivity, 14))
             addView(receivedList)
             addView(Style.spacer(this@MainActivity, 12))
             addView(receivedWhere)
+            addView(Style.spacer(this@MainActivity, 12))
+            addView(quietButton("Open the folder") {
+                if (!ReceiveFolder.open(this@MainActivity)) {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Look in ${ReceiveFolder.describe(this@MainActivity)}",
+                        Toast.LENGTH_LONG,
+                    ).show()
+                }
+            })
+            addView(Style.spacer(this@MainActivity, 8))
+            addView(quietButton("Change folder") { chooseReceiveFolder() })
         }
         return receivedCard
+    }
+
+    /**
+     * Let the user pick where received files land.
+     *
+     * The service reads the folder when it starts, so it is restarted after
+     * a change -- a file mid-transfer at that exact moment would be the
+     * user's own doing, and the alternative (a folder setting that silently
+     * applies only sometimes) is worse.
+     */
+    private fun chooseReceiveFolder() {
+        val choices = ReceiveFolder.Choice.entries
+        val current = ReceiveFolder.current(this)
+        AlertDialog.Builder(this)
+            .setTitle("Save received files in")
+            .setSingleChoiceItems(
+                choices.map { it.label }.toTypedArray(),
+                choices.indexOf(current),
+            ) { dialog, index ->
+                dialog.dismiss()
+                val chosen = choices[index]
+                if (chosen != current) {
+                    ReceiveFolder.set(this, chosen)
+                    AirGrabService.stop(this)
+                    AirGrabService.start(this)
+                    Toast.makeText(
+                        this,
+                        "Now saving to ${ReceiveFolder.describe(this)}",
+                        Toast.LENGTH_LONG,
+                    ).show()
+                }
+                render()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     /**
@@ -656,13 +702,17 @@ class MainActivity : AppCompatActivity() {
 
     private fun renderReceived(service: AirGrabService?) {
         val arrivals = service?.received?.let { synchronized(it) { it.toList() } }.orEmpty()
+
+        // The card stays even when empty: the user asked, reasonably, where
+        // their files would go, and the answer was nowhere to be seen.
+        receivedWhere.text = "Saved in ${ReceiveFolder.describe(this)}"
+
+        receivedList.removeAllViews()
         if (arrivals.isEmpty()) {
-            receivedCard.visibility = View.GONE
+            receivedList.addView(Style.body(this, "Nothing yet."))
             return
         }
 
-        receivedCard.visibility = View.VISIBLE
-        receivedList.removeAllViews()
         arrivals.take(5).forEachIndexed { index, arrival ->
             receivedList.addView(Style.row(this).apply {
                 addView(LinearLayout(this@MainActivity).apply {
@@ -689,8 +739,6 @@ class MainActivity : AppCompatActivity() {
             if (index != minOf(arrivals.size, 5) - 1) receivedList.addView(Style.spacer(this, 14))
         }
 
-        receivedWhere.text = "Saved in ${service?.downloadDirectory()?.name ?: "AirGrab"}, " +
-            "under Files › Internal storage › Android › data"
     }
 
     private fun renderDiagnostics(service: AirGrabService?, node: com.airgrab.core.Node?) {
