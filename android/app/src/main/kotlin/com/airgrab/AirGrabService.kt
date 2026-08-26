@@ -159,6 +159,18 @@ class AirGrabService : LifecycleService() {
     fun activityIsFresh(now: Long = System.currentTimeMillis()): Boolean =
         now - activityAt < ACTIVITY_HEADLINE_MILLIS
 
+    /**
+     * Whoever can show six digits right now, or nobody.
+     *
+     * Set by the activity while it is in front of the user, cleared when it
+     * leaves. Inbound pairing with nobody to ask is REFUSED: the fallback
+     * used to be silent acceptance, which meant a phone would pair with
+     * anything that knocked while its screen was off. The user found it by
+     * pairing from the other phone and noticing this one never asked.
+     */
+    @Volatile
+    var pairPrompt: ((sas: String, peerName: String) -> Boolean)? = null
+
     /** Peers currently visible, for the UI to render. */
     val peers: List<DiscoveredPeer> get() = discovery?.peers().orEmpty()
 
@@ -235,6 +247,10 @@ class AirGrabService : LifecycleService() {
             // Notification only. Whether the file was allowed at all was
             // decided by the node, which refuses anything from a device that
             // is not paired.
+            started.onPairRequest = { sas, peerName ->
+                pairPrompt?.invoke(sas, peerName) ?: false
+            }
+
             started.onIncomingFile = { file ->
                 activity = "Received ${file.name}"
                 activityAt = System.currentTimeMillis()

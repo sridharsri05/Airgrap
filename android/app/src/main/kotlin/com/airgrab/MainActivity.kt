@@ -168,6 +168,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        AirGrabService.current?.pairPrompt = ::confirmCode
         refreshWarning()
         refreshPhotos()
         // Checked on every resume: the user grants this in Settings and comes
@@ -670,9 +671,20 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    override fun onPause() {
+        // Gone from the screen means gone as a consent mechanism. The
+        // service then refuses inbound pairing rather than deciding alone.
+        AirGrabService.current?.pairPrompt = null
+        super.onPause()
+    }
+
     private fun render() {
         val service = AirGrabService.current
         val node = service?.node
+        // The service may have come up after onResume ran.
+        if (service != null && service.pairPrompt == null && !isFinishing) {
+            service.pairPrompt = ::confirmCode
+        }
 
         when {
             service == null || node == null ->
