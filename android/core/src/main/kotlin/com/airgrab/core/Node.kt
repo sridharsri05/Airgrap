@@ -129,6 +129,16 @@ class Node(val config: NodeConfig, val identity: FileIdentity) {
             Netty,
             applicationEnvironment { },
             configure = {
+                // No HTTP/2, and this is load-bearing, not an optimisation.
+                // With it on, Netty negotiates ALPN during the TLS handshake,
+                // and Android's SSLEngine returns null where Netty expects a
+                // protocol string -- an NPE that kills every inbound
+                // connection before a byte of reply, logged only as "Server
+                // disconnected" on the machine dialling in. Some handsets'
+                // TLS stacks return "" instead and happen to work, which is
+                // why the same APK accepted connections on one phone and
+                // refused them on another.
+                enableHttp2 = false
                 sslConnector(
                     keyStore = identity.keyStore,
                     keyAlias = identity.keyAlias,
