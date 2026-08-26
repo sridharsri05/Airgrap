@@ -64,7 +64,7 @@ class GestureOverlay(private val context: Context) {
         val ring = RingView(context, kind, label)
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
-            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             // Not focusable and not touchable: the user is mid-gesture and
             // must never have a tap swallowed by a status indicator.
@@ -72,9 +72,7 @@ class GestureOverlay(private val context: Context) {
                 WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT,
-        ).apply {
-            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-        }
+        ).apply { gravity = Gravity.CENTER }
 
         runCatching { windows.addView(ring, params) }.onFailure { return }
         view = ring
@@ -92,7 +90,7 @@ class GestureOverlay(private val context: Context) {
     }
 
     /**
-     * A glowing hollow ring in the upper third of the screen.
+     * A glowing hollow ring at the centre of the screen.
      *
      * Drawn rather than assembled from views because the whole thing is one
      * animation over one surface. The glow is three concentric strokes of the
@@ -100,11 +98,10 @@ class GestureOverlay(private val context: Context) {
      * near-white core — because that reads as light on any background,
      * where a blur filter behaves differently across hardware canvases.
      *
-     * The animation has three acts in one sweep of progress: the ring blooms
-     * out of the top of the screen (where the camera that saw the hand
-     * lives), breathes while it holds, then resolves — collapsing into
-     * itself for a finished transfer, fading in place for a hold, shrinking
-     * out apologetically for a cancel.
+     * The animation has three acts in one sweep of progress: the ring
+     * blooms at the centre of the screen, breathes while it holds, then
+     * resolves — collapsing into itself for a finished transfer, fading in
+     * place for a hold, shrinking out apologetically for a cancel.
      */
     private class RingView(
         context: Context,
@@ -170,17 +167,13 @@ class GestureOverlay(private val context: Context) {
             animator = null
         }
 
-        override fun onMeasure(widthSpec: Int, heightSpec: Int) {
-            setMeasuredDimension(
-                MeasureSpec.getSize(widthSpec),
-                dp(300f).toInt(),
-            )
-        }
-
         override fun onDraw(canvas: Canvas) {
             val centreX = width / 2f
-            val centreY = dp(128f)
-            val full = dp(72f)
+            // Dead centre of the screen, where Huawei puts theirs. The first
+            // version sat near the camera at the top, which made sense on
+            // paper and looked like a notification in the hand.
+            val centreY = height / 2f
+            val full = dp(84f)
 
             // Three acts on one clock.
             val bloom = smooth(min(1f, progress / 0.22f))
