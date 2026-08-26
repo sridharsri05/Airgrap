@@ -9,6 +9,14 @@
          nothing and reports no error at all. -->
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
 
+    <!-- Opening the local-only hotspot is a CHANGE of Wi-Fi state, and the
+         system checks this before the nearby-devices permission ever comes
+         into it. Install-time, no prompt. Its absence was found by the user
+         pressing the button. -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <!-- To JOIN a scanned network programmatically (WifiNetworkSpecifier). -->
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+
     <!-- To HOST a direct link: the app starts a local-only hotspot and shows
          its credentials as a QR the other phone scans. Android gates that
          API behind nearby-devices (13+) or fine location (older). The
@@ -111,5 +119,9 @@
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
             </intent-filter>
         </receiver>
+            <activity
+            android:name=".ScanActivity"
+            android:exported="false"
+            android:screenOrientation="portrait" />
     </application>
 </manifest>

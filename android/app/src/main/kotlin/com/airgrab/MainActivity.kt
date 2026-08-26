@@ -306,6 +306,8 @@ class MainActivity : AppCompatActivity() {
             // Present even on Wi-Fi: two phones on DIFFERENT networks meet
             // the same wall, and the answer is the same QR.
             addView(quietButton("Connect directly - show a QR") { hostDirectLink() })
+            addView(Style.spacer(this@MainActivity, 8))
+            addView(quietButton("Scan a QR") { startScan() })
         }
     }
 
@@ -401,6 +403,8 @@ class MainActivity : AppCompatActivity() {
             addView(Style.spacer(this@MainActivity, 14))
             addView(accentButton("Connect directly - show a QR") { hostDirectLink() })
             addView(Style.spacer(this@MainActivity, 8))
+            addView(quietButton("Scan the other phone's QR") { startScan() })
+            addView(Style.spacer(this@MainActivity, 8))
             addView(quietButton("Turn on Wi-Fi") { openWifiPanel() })
             addView(Style.spacer(this@MainActivity, 8))
             addView(quietButton("Open hotspot settings") { openHotspotSettings() })
@@ -420,6 +424,10 @@ class MainActivity : AppCompatActivity() {
      * joins by pointing its ordinary camera at the code -- nothing typed,
      * nothing installed first.
      */
+    private fun startScan() {
+        startActivity(Intent(this, ScanActivity::class.java))
+    }
+
     private fun hostDirectLink() {
         if (!DirectLink.permitted(this)) {
             requestDirectLink.launch(DirectLink.permission)

@@ -404,6 +404,7 @@ class AirGrabService : LifecycleService() {
         // The direct-link hotspot dies with the app that conjured it, or it
         // would go on broadcasting a network nothing is listening on.
         runCatching { DirectLink.stop() }
+        runCatching { DirectJoin.leave() }
         runCatching { overlay.hideNow() }
         runCatching { camera?.stop() }
         runCatching { detector?.close() }
