@@ -13,3 +13,4 @@ desktop/models/
 # publish an update that Android will install over this app without warning.
 android/keystore/
 android/keystore.properties
+android/.kotlin/
