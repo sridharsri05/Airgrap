@@ -1,4 +1,4 @@
-# Building AirGrab for Windows
+﻿# Building AirGrab for Windows
 
 Produces a single-folder Windows build: `dist/AirGrab/AirGrab.exe` plus the
 `_internal/` folder it needs. Both ship together.
@@ -36,7 +36,7 @@ committed. From the `desktop` directory:
 ```
 
 It downloads to `desktop/models/gesture_recognizer.task` and verifies the
-SHA-256. The build refuses to run without it — a build with no model produces
+SHA-256. The build refuses to run without it â€” a build with no model produces
 an application whose gestures silently never fire.
 
 ## 2. Build
@@ -66,15 +66,15 @@ considerably smaller). Intermediate build files land in `desktop/build/` and
 can be deleted.
 
 Ship or copy **the whole `AirGrab` folder**. `AirGrab.exe` on its own will not
-start — the `_internal` folder next to it is the application.
+start â€” the `_internal` folder next to it is the application.
 
 ## First run
 
 AirGrab listens on TCP 53421 for incoming transfers, so Windows Firewall must
-allow it. **Run `AirGrab.exe` as administrator once** (right-click → Run as
+allow it. **Run `AirGrab.exe` as administrator once** (right-click â†’ Run as
 administrator) so it can create its inbound firewall rule; after that, normal
 launches work. Without it the tray shows
-"Firewall is blocking AirGrab — run once as administrator", discovery still
+"Firewall is blocking AirGrab â€” run once as administrator", discovery still
 works, but incoming transfers will not.
 
 AirGrab lives in the notification area. **Double-click the tray icon** to open
@@ -83,7 +83,7 @@ Closing the window hides it and leaves AirGrab running -- Quit, in the window's
 footer or the tray menu, is what actually stops it.
 
 The build is unsigned, so SmartScreen will show "Windows protected your PC" on
-first launch — More info → Run anyway.
+first launch â€” More info â†’ Run anyway.
 
 ## Why single-folder, not single-file
 
@@ -116,10 +116,10 @@ folder starts immediately.
 ## 3. Installer (optional)
 
 To get a normal Windows setup wizard instead of a bare folder, compile
-`build\AirGrab.iss` with Inno Setup 6 after the build above:
+`tools\AirGrab.iss` with Inno Setup 6 after the build above:
 
 ```
-ISCC.exe build\AirGrab.iss
+ISCC.exe tools\AirGrab.iss
 ```
 
 Output: `dist/AirGrab-Setup.exe` (~90 MB). It installs to Program Files,
@@ -127,3 +127,4 @@ creates Start menu / desktop icons, offers run-at-startup, and adds the
 inbound firewall rule for TCP 53421 itself -- so the "run once as
 administrator" step in "First run" above is not needed when installing
 this way.
+
