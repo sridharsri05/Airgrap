@@ -15,6 +15,7 @@ import io.ktor.server.engine.applicationEnvironment
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.engine.sslConnector
 import io.ktor.server.netty.Netty
+import io.ktor.server.plugins.origin
 import io.ktor.server.netty.NettyApplicationEngine
 import io.ktor.server.request.receiveChannel
 import io.ktor.server.response.respondText
@@ -108,6 +109,23 @@ class Node(val config: NodeConfig, val identity: FileIdentity) {
     // Control channels currently open, by peer fingerprint.
     private val inbound = ConcurrentHashMap<String, Pair<WebSocketSession, Session>>()
     private val links = ConcurrentHashMap<String, PeerLink>()
+
+    /**
+     * Where each authenticated peer was last reachable.
+     *
+     * Discovery is one way to learn an address, and on a direct link there
+     * is none: mDNS does not cross a local-only hotspot. The addresses that
+     * matter are already in hand -- the host we dialled, or the remote end
+     * of an inbound connection -- and losing them meant a gesture arriving
+     * over a perfectly good control channel had nowhere to send the file.
+     */
+    private val peerAddresses = ConcurrentHashMap<String, String>()
+
+    /** The last known address for a peer, learned from any live connection. */
+    fun addressOf(peerFp: String): String? = peerAddresses[peerFp]
+
+    /** Fingerprints with an open control channel, in either direction. */
+    fun activeFingerprints(): Set<String> = inbound.keys + links.keys
 
     // Per-instance, never shared: two Nodes in one process (the loopback
     // tests, and any future multi-peer support) must not share in-flight
@@ -255,6 +273,7 @@ class Node(val config: NodeConfig, val identity: FileIdentity) {
                 session.authenticated = result.ok
                 if (result.ok && trust.isTrusted(session.peerFp)) {
                     inbound[session.peerFp] = ws to session
+                    remoteHostOf(ws)?.let { peerAddresses[session.peerFp] = it }
                 }
                 if (!result.ok) {
                     send(ws, session, MessageType.ERROR, mapOf(
@@ -456,8 +475,16 @@ class Node(val config: NodeConfig, val identity: FileIdentity) {
         val link = PeerLink(this, host, port, expectFp)
         link.open()
         links[link.peerFp] = link
+        peerAddresses[link.peerFp] = host
         return link
     }
+
+    /** The address on the far end of an inbound connection. */
+    private fun remoteHostOf(ws: WebSocketSession): String? =
+        runCatching {
+            (ws as? io.ktor.server.websocket.DefaultWebSocketServerSession)
+                ?.call?.request?.origin?.remoteHost
+        }.getOrNull()
 
     suspend fun closeLinks() {
         links.values.toList().forEach { it.close() }

@@ -272,7 +272,24 @@ class AirGrabService : LifecycleService() {
                 node = started,
                 scope = scope,
                 machine = stateMachine,
-                peerLookup = { fingerprint -> discovery?.peers()?.firstOrNull { it.fingerprint == fingerprint } },
+                peerLookup = { fingerprint ->
+                    // Discovery first; failing that, any live connection has
+                    // already taught the node where this peer answers. On a
+                    // direct link discovery NEVER knows, and consulting only
+                    // it turned every gesture into "Lost the other device".
+                    discovery?.peers()?.firstOrNull { it.fingerprint == fingerprint }
+                        ?: started.addressOf(fingerprint)?.let { address ->
+                            val known = started.trust.all()
+                                .firstOrNull { it.fingerprint == fingerprint }
+                            DiscoveredPeer(
+                                fingerprint = fingerprint,
+                                name = known?.name ?: "Device",
+                                platform = known?.platform ?: "unknown",
+                                host = address,
+                                port = com.airgrab.core.DEFAULT_PORT,
+                            )
+                        }
+                },
                 onContentWanted = {
                     // Shared something? Send exactly that — any file, any
                     // type. Otherwise fall back to the most recent photo,

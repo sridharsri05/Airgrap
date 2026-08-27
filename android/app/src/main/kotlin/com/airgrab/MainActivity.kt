@@ -704,11 +704,27 @@ class MainActivity : AppCompatActivity() {
             service.activity != "Ready" && service.activityIsFresh() ->
                 setState("✓", Style.good(this), service.activity, "")
 
-            service.peers.isEmpty() ->
-                setState(
-                    "◌", Style.warn(this), "Looking for your PC",
-                    "Both devices need the same Wi-Fi, with AirGrab running on the PC.",
-                )
+            service.peers.isEmpty() -> {
+                // Discovery may know nothing while a control channel is live
+                // and trusted -- on a direct link, always. A connected device
+                // is connected, however it was found; saying "Looking for
+                // your PC" over a working link made the user doubt a link
+                // that was fine.
+                val linkedName = node.activeFingerprints()
+                    .mapNotNull { fp -> node.trust.all().firstOrNull { it.fingerprint == fp } }
+                    .firstOrNull()?.name
+                if (linkedName != null) {
+                    setState(
+                        "🖐", Style.good(this), "Ready",
+                        "Make a fist to pick something up, then open your palm at $linkedName.",
+                    )
+                } else {
+                    setState(
+                        "◌", Style.warn(this), "Looking for devices",
+                        "Join the same Wi-Fi, or connect directly with the QR below.",
+                    )
+                }
+            }
 
             else -> {
                 val paired = service.peers.count { node.trust.isTrusted(it.fingerprint) }
@@ -820,8 +836,38 @@ class MainActivity : AppCompatActivity() {
         // not reliably cross a local-only hotspot, which was watched happen:
         // two phones connected, neither seeing the other. The guest needs no
         // discovery though; the host IS the network's gateway.
+        // Peers with a live, trusted control channel that discovery knows
+        // nothing about -- on a direct link, all of them. They were shown as
+        // nothing at all, while the anonymous "Other phone" row sat below
+        // still offering to pair with an already-paired device.
+        val connectedUnseen = if (node == null) emptyList() else {
+            node.activeFingerprints()
+                .filter { fp -> peers.none { it.fingerprint == fp } }
+                .mapNotNull { fp -> node.trust.all().firstOrNull { it.fingerprint == fp } }
+        }
+        connectedUnseen.forEach { known ->
+            devicesList.addView(Style.row(this).apply {
+                addView(LinearLayout(this@MainActivity).apply {
+                    orientation = LinearLayout.VERTICAL
+                    layoutParams = LinearLayout.LayoutParams(
+                        0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f
+                    )
+                    addView(Style.body(this@MainActivity, known.name,
+                        Style.text(this@MainActivity)))
+                    addView(Style.mono(this@MainActivity,
+                        "${node?.addressOf(known.fingerprint) ?: "direct"}  ·  direct link"))
+                })
+                addView(Style.chip(this@MainActivity, "Paired", Style.good(this@MainActivity)))
+            })
+            devicesList.addView(Style.spacer(this, 16))
+        }
+
+        // The not-yet-paired host of a joined network: known only by address.
         val directHost = DirectJoin.hostAddress
-        if (directHost != null && node != null && peers.none { it.host == directHost }) {
+        val hostAlreadyShown = directHost != null && node != null &&
+            (peers.any { it.host == directHost } ||
+                connectedUnseen.any { node.addressOf(it.fingerprint) == directHost })
+        if (directHost != null && node != null && !hostAlreadyShown) {
             devicesList.addView(Style.row(this).apply {
                 addView(LinearLayout(this@MainActivity).apply {
                     orientation = LinearLayout.VERTICAL
@@ -842,7 +888,9 @@ class MainActivity : AppCompatActivity() {
         }
 
         if (peers.isEmpty() || node == null) {
-            devicesList.addView(Style.body(this, "None found yet."))
+            if (connectedUnseen.isEmpty()) {
+                devicesList.addView(Style.body(this, "None found yet."))
+            }
             return
         }
 
