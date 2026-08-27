@@ -112,3 +112,18 @@ folder starts immediately.
   distribution is "copy the folder".
 - **Antivirus.** Unsigned PyInstaller bootloaders are occasionally flagged
   heuristically. Signing generally resolves it.
+
+## 3. Installer (optional)
+
+To get a normal Windows setup wizard instead of a bare folder, compile
+`build\AirGrab.iss` with Inno Setup 6 after the build above:
+
+```
+ISCC.exe build\AirGrab.iss
+```
+
+Output: `dist/AirGrab-Setup.exe` (~90 MB). It installs to Program Files,
+creates Start menu / desktop icons, offers run-at-startup, and adds the
+inbound firewall rule for TCP 53421 itself -- so the "run once as
+administrator" step in "First run" above is not needed when installing
+this way.
